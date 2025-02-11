@@ -1,0 +1,68 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.11.35327.3
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Pippin", "Pippin.csproj", "{14FF8427-0AB7-4D48-AC26-80AA1495BD92}"
+EndProject
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "Gluten.Data", "..\_Library\Gluten.Data\Gluten.Data.csproj", "{3DA5DF96-897E-4128-9D7C-44D43BDF48AD}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Library", "Library", "{2FB55F54-91B4-45D3-89E5-656F1104A830}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Gluten.Data.Access", "..\_Library\Gluten.Data.Access\Gluten.Data.Access.csproj", "{A314FB48-8302-42D1-A7CF-5832C7C5151B}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Gluten.External.Api", "..\_Library\Gluten.External.Api\Gluten.External.Api.csproj", "{2DCB6018-81E0-4245-BFAB-BCB582B93AC8}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{14FF8427-0AB7-4D48-AC26-80AA1495BD92}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{14FF8427-0AB7-4D48-AC26-80AA1495BD92}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{14FF8427-0AB7-4D48-AC26-80AA1495BD92}.Debug|x64.ActiveCfg = Debug|x64
+		{14FF8427-0AB7-4D48-AC26-80AA1495BD92}.Debug|x64.Build.0 = Debug|x64
+		{14FF8427-0AB7-4D48-AC26-80AA1495BD92}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{14FF8427-0AB7-4D48-AC26-80AA1495BD92}.Release|Any CPU.Build.0 = Release|Any CPU
+		{14FF8427-0AB7-4D48-AC26-80AA1495BD92}.Release|x64.ActiveCfg = Release|x64
+		{14FF8427-0AB7-4D48-AC26-80AA1495BD92}.Release|x64.Build.0 = Release|x64
+		{3DA5DF96-897E-4128-9D7C-44D43BDF48AD}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{3DA5DF96-897E-4128-9D7C-44D43BDF48AD}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{3DA5DF96-897E-4128-9D7C-44D43BDF48AD}.Debug|x64.ActiveCfg = Debug|x64
+		{3DA5DF96-897E-4128-9D7C-44D43BDF48AD}.Debug|x64.Build.0 = Debug|x64
+		{3DA5DF96-897E-4128-9D7C-44D43BDF48AD}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{3DA5DF96-897E-4128-9D7C-44D43BDF48AD}.Release|Any CPU.Build.0 = Release|Any CPU
+		{3DA5DF96-897E-4128-9D7C-44D43BDF48AD}.Release|x64.ActiveCfg = Release|x64
+		{3DA5DF96-897E-4128-9D7C-44D43BDF48AD}.Release|x64.Build.0 = Release|x64
+		{A314FB48-8302-42D1-A7CF-5832C7C5151B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{A314FB48-8302-42D1-A7CF-5832C7C5151B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{A314FB48-8302-42D1-A7CF-5832C7C5151B}.Debug|x64.ActiveCfg = Debug|x64
+		{A314FB48-8302-42D1-A7CF-5832C7C5151B}.Debug|x64.Build.0 = Debug|x64
+		{A314FB48-8302-42D1-A7CF-5832C7C5151B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{A314FB48-8302-42D1-A7CF-5832C7C5151B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{A314FB48-8302-42D1-A7CF-5832C7C5151B}.Release|x64.ActiveCfg = Release|x64
+		{A314FB48-8302-42D1-A7CF-5832C7C5151B}.Release|x64.Build.0 = Release|x64
+		{2DCB6018-81E0-4245-BFAB-BCB582B93AC8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2DCB6018-81E0-4245-BFAB-BCB582B93AC8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2DCB6018-81E0-4245-BFAB-BCB582B93AC8}.Debug|x64.ActiveCfg = Debug|x64
+		{2DCB6018-81E0-4245-BFAB-BCB582B93AC8}.Debug|x64.Build.0 = Debug|x64
+		{2DCB6018-81E0-4245-BFAB-BCB582B93AC8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2DCB6018-81E0-4245-BFAB-BCB582B93AC8}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2DCB6018-81E0-4245-BFAB-BCB582B93AC8}.Release|x64.ActiveCfg = Release|x64
+		{2DCB6018-81E0-4245-BFAB-BCB582B93AC8}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(NestedProjects) = preSolution
+		{3DA5DF96-897E-4128-9D7C-44D43BDF48AD} = {2FB55F54-91B4-45D3-89E5-656F1104A830}
+		{A314FB48-8302-42D1-A7CF-5832C7C5151B} = {2FB55F54-91B4-45D3-89E5-656F1104A830}
+		{2DCB6018-81E0-4245-BFAB-BCB582B93AC8} = {2FB55F54-91B4-45D3-89E5-656F1104A830}
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {30CC0BF7-3590-44BD-828C-7D8BCD0172F4}
+	EndGlobalSection
+EndGlobal

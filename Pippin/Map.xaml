@@ -1,0 +1,40 @@
+﻿<Window x:Class="Pippin.Map"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:Pippin"
+        xmlns:syncfusion="http://schemas.syncfusion.com/wpf"
+        mc:Ignorable="d"
+        Title="Map" Height="600" Width="1200">
+    <Grid>
+        <syncfusion:SfMap Name="MapControl" ZoomLevel="3">
+            <syncfusion:SfMap.Layers>
+                <syncfusion:ImageryLayer Markers="{Binding Models}" LayerType="OSM" Height="329" Margin="0,0,100,0">
+                    <syncfusion:ImageryLayer.MarkerTemplate>
+                        <DataTemplate>
+                            <Grid Margin="15,-30,0,0">
+                                <Canvas>
+                                    <Image Source="/Assets/pin.png" Height="30"/>
+                                </Canvas>
+                                <Grid DataContext="{Binding Data}" >
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition />
+                                    </Grid.RowDefinitions>
+                                    <Grid.ColumnDefinitions>
+                                        <ColumnDefinition/>
+                                    </Grid.ColumnDefinitions>
+                                    <Canvas Grid.Row="0" Grid.Column="0" Margin="0,0,0,0">
+                                        <TextBlock Foreground="Black" HorizontalAlignment="Center" FontSize="15" FontFamily="Segoe UI" Text="{Binding Name}" Canvas.Left="25" Canvas.Top="25" />
+                                    </Canvas>
+                                </Grid>
+                            </Grid>
+                        </DataTemplate>
+                    </syncfusion:ImageryLayer.MarkerTemplate>
+                </syncfusion:ImageryLayer>
+            </syncfusion:SfMap.Layers>
+        </syncfusion:SfMap>
+
+    </Grid>
+</Window>
+
