@@ -12,6 +12,7 @@ using Gluten.External.Api.Model;
 using System.IO;
 using Newtonsoft.Json;
 using System.Net;
+using System.Threading;
 
 namespace Pippin
 {
@@ -57,80 +58,49 @@ namespace Pippin
 
         public async Task LoadData()
         {
-            _model = new OpenStreetMapsViewModel();
-            string json;
-            if (File.Exists(IPCacheFileName))
+            await Task.Run(async () =>
             {
-                json = File.ReadAllText(IPCacheFileName);
-                _ipAddresses = JsonConvert.DeserializeObject<List<FreeIp>>(json);
-            }
+                _model = new OpenStreetMapsViewModel();
 
-
-
-
-            var ipitems = await _dataStore.GetData<DataQueryDb>($"Where c.Date>'{DateTime.Now.AddDays(-1).ToString("yyyy-MM-dd")}'", CloudDataStoreService.ProductionSuffix);
-            foreach (var item in ipitems)
-            {
-                var mapItem = _model.Models.SingleOrDefault(o => o.IpAddress == item.IpAddress);
-                if (_model.Models.Count(o => o.IpAddress == item.IpAddress) > 0)
+                // Marshal the call back to the UI thread
+                Application.Current.Dispatcher.Invoke(() =>
                 {
-                    mapItem.Count++;
-                    continue;
-                };
-
-                FreeIp? ipData = null;
-                foreach (var ipAddress in _ipAddresses)
-                {
-                    if (ipAddress.ipAddress == item.IpAddress)
-                    {
-                        ipData = ipAddress;
-                        break;
-                    }
-                }
-
-                if (ipData == null)
-                {
-                    ipData = IpAddressService.ReadIpAddressDetailsFreeApi(item.IpAddress);
-                    _ipAddresses.Add(ipData);
-                }
-
-                //var ipData = IpAddressService.ReadIpAddressDetails(item.IpAddress);
-                _model.Models.Add(new OpenStreetMapsModel()
-                {
-                    Latitude = ipData.latitude.ToString(),
-                    Longitude = ipData.longitude.ToString(),
-                    IpAddress = item.IpAddress,
-                    Count = 1
+                    DataContext = _model;
                 });
-            }
-            ipitems = await _dataStore.GetData<DataQueryDb>($"Where c.Date>'{DateTime.Now.AddDays(-1).ToString("yyyy-MM-dd")}'", CloudDataStoreService.PreviewSuffix);
-            foreach (var item in ipitems)
-            {
-                var mapItem = _model.Models.SingleOrDefault(o => o.IpAddress == item.IpAddress);
-                if (_model.Models.Count(o => o.IpAddress == item.IpAddress) > 0)
+
+                string json;
+                if (File.Exists(IPCacheFileName))
                 {
-                    mapItem.Count++;
-                    continue;
-                };
-                FreeIp? ipData = null;
-                foreach (var ipAddress in _ipAddresses)
-                {
-                    if (ipAddress.ipAddress == item.IpAddress)
-                    {
-                        ipData = ipAddress;
-                        break;
-                    }
+                    json = File.ReadAllText(IPCacheFileName);
+                    _ipAddresses = JsonConvert.DeserializeObject<List<FreeIp>>(json);
                 }
 
-                if (ipData == null)
+                var ipitems = await _dataStore.GetData<DataQueryDb>($"Where c.Date>'{DateTime.Now.AddDays(-1).ToString("yyyy-MM-dd")}'", CloudDataStoreService.ProductionSuffix);
+                foreach (var item in ipitems)
                 {
-                    ipData = IpAddressService.ReadIpAddressDetailsFreeApi(item.IpAddress);
-                    _ipAddresses.Add(ipData);
-                }
-                //if (ipData == null) break;
-                if (ipData != null)
-                {
-                    _ipAddresses.Add(ipData);
+                    var mapItem = _model.Models.SingleOrDefault(o => o.IpAddress == item.IpAddress);
+                    if (_model.Models.Count(o => o.IpAddress == item.IpAddress) > 0)
+                    {
+                        mapItem.Count++;
+                        continue;
+                    };
+
+                    FreeIp? ipData = null;
+                    foreach (var ipAddress in _ipAddresses)
+                    {
+                        if (ipAddress.ipAddress == item.IpAddress)
+                        {
+                            ipData = ipAddress;
+                            break;
+                        }
+                    }
+
+                    if (ipData == null)
+                    {
+                        ipData = IpAddressService.ReadIpAddressDetailsFreeApi(item.IpAddress);
+                        _ipAddresses.Add(ipData);
+                    }
+
                     _model.Models.Add(new OpenStreetMapsModel()
                     {
                         Latitude = ipData.latitude.ToString(),
@@ -139,14 +109,49 @@ namespace Pippin
                         Count = 1
                     });
                 }
-            }
 
-            using StreamWriter file = File.CreateText(IPCacheFileName);
-            JsonSerializer serializer = new();
-            serializer.Formatting = Formatting.Indented; // Optional: makes the JSON readable
-            serializer.Serialize(file, _ipAddresses);
+                ipitems = await _dataStore.GetData<DataQueryDb>($"Where c.Date>'{DateTime.Now.AddDays(-1).ToString("yyyy-MM-dd")}'", CloudDataStoreService.PreviewSuffix);
+                foreach (var item in ipitems)
+                {
+                    var mapItem = _model.Models.SingleOrDefault(o => o.IpAddress == item.IpAddress);
+                    if (_model.Models.Count(o => o.IpAddress == item.IpAddress) > 0)
+                    {
+                        mapItem.Count++;
+                        continue;
+                    };
+                    FreeIp? ipData = null;
+                    foreach (var ipAddress in _ipAddresses)
+                    {
+                        if (ipAddress.ipAddress == item.IpAddress)
+                        {
+                            ipData = ipAddress;
+                            break;
+                        }
+                    }
 
-            DataContext = _model;
+                    if (ipData == null)
+                    {
+                        ipData = IpAddressService.ReadIpAddressDetailsFreeApi(item.IpAddress);
+                        _ipAddresses.Add(ipData);
+                    }
+                    if (ipData != null)
+                    {
+                        _ipAddresses.Add(ipData);
+                        _model.Models.Add(new OpenStreetMapsModel()
+                        {
+                            Latitude = ipData.latitude.ToString(),
+                            Longitude = ipData.longitude.ToString(),
+                            IpAddress = item.IpAddress,
+                            Count = 1
+                        });
+                    }
+                }
+
+                using StreamWriter file = File.CreateText(IPCacheFileName);
+                JsonSerializer serializer = new();
+                serializer.Formatting = Formatting.Indented; // Optional: makes the JSON readable
+                serializer.Serialize(file, _ipAddresses);
+            });
         }
     }
 }
