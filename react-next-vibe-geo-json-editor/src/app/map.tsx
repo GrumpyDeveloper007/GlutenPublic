@@ -93,19 +93,19 @@ function SelectionBox({
 
     useMapEvents({
         mousedown: (e) => {
-            if (isDrawing) {
-                const startPoint: LatLngTuple = [e.latlng.lat, e.latlng.lng];
-                setCurrentBox({ start: startPoint, end: startPoint });
-            }
+            //if (isDrawing) {
+            const startPoint: LatLngTuple = [e.latlng.lat, e.latlng.lng];
+            setCurrentBox({ start: startPoint, end: startPoint });
+            //}
         },
         mousemove: (e) => {
-            if (isDrawing && currentBox) {
+            if (currentBox) {//isDrawing
                 const endPoint: LatLngTuple = [e.latlng.lat, e.latlng.lng];
                 setCurrentBox({ ...currentBox, end: endPoint });
             }
         },
         mouseup: (e) => {
-            if (isDrawing && currentBox) {
+            if (currentBox) {//isDrawing
                 const endPoint: LatLngTuple = [e.latlng.lat, e.latlng.lng];
                 const bounds = new LatLngBounds(
                     [Math.min(currentBox.start[0], endPoint[0]), Math.min(currentBox.start[1], endPoint[1])],
