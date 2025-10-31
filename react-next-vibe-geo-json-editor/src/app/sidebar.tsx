@@ -80,7 +80,7 @@ const Sidebar = ({
                         marginTop: '10px'
                     }}
                 >
-                    📥 Download World-EEZ.geo.json
+                    📥 Download geo.json
                 </button>
                 {!worldEEZData && (
                     <p style={{
