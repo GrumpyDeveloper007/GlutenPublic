@@ -258,9 +258,10 @@ interface MapProps {
     setSelectedTopicGroup: React.Dispatch<React.SetStateAction<TopicGroupClass>>;
     selectedPoints?: any[];
     setSelectedPoints?: React.Dispatch<React.SetStateAction<any[]>>;
+    setWorldEEZData?: React.Dispatch<React.SetStateAction<any>>;
 }
 
-export default function Map({ setSelectedTopicGroup, selectedPoints, setSelectedPoints }: MapProps) {
+export default function Map({ setSelectedTopicGroup, selectedPoints, setSelectedPoints, setWorldEEZData: setParentWorldEEZData }: MapProps) {
     const [map, setMap] = useState<LeafletMap | null>(null);
     const [currentMarkers, setCurrentMarkers] = useState<any[]>([]);
     const [worldEEZData, setWorldEEZData] = useState<any>(null);
@@ -271,6 +272,13 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
     const [selectionBox, setSelectionBox] = useState<{ start: LatLngTuple, end: LatLngTuple } | null>(null);
     const [showDeleteMessage, setShowDeleteMessage] = useState(false);
     const [geoJsonKey, setGeoJsonKey] = useState(0);
+
+    // Sync worldEEZData to parent component when it changes
+    useEffect(() => {
+        if (setParentWorldEEZData && worldEEZData) {
+            setParentWorldEEZData(worldEEZData);
+        }
+    }, [worldEEZData, setParentWorldEEZData]);
 
     const center: LatLngTuple = [0, 0]
     const zoom = 8

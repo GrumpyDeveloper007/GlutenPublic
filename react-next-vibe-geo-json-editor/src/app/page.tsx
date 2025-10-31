@@ -15,6 +15,7 @@ const DynamicComponentWithNoSSR = dynamic(
 export default function Home() {
   const [selectedTopicGroup, setSelectedTopicGroup] = useState<TopicGroupClass>(new TopicGroupClass(999, 999, "test", "test", [], "test", "test", "test", "test"));
   const [selectedPoints, setSelectedPoints] = useState<any[]>([]);
+  const [worldEEZData, setWorldEEZData] = useState<any>(null);
 
   return (
     <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
@@ -29,12 +30,14 @@ export default function Home() {
                   setSelectedTopicGroup={setSelectedTopicGroup}
                   selectedPoints={selectedPoints}
                   setSelectedPoints={setSelectedPoints}
+                  setWorldEEZData={setWorldEEZData}
                 />
               </div>
               <div className="detail">
                 <Sidebar
                   selectedTopicGroup={selectedTopicGroup}
                   selectedPoints={selectedPoints}
+                  worldEEZData={worldEEZData}
                 />
               </div>
             </div>

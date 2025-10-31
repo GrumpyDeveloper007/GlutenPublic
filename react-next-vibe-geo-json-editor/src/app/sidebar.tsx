@@ -5,10 +5,12 @@ import { TopicGroupClass } from '../_model/model';
 
 const Sidebar = ({
     selectedTopicGroup,
-    selectedPoints
+    selectedPoints,
+    worldEEZData
 }: {
     selectedTopicGroup: TopicGroupClass;
     selectedPoints: any[];
+    worldEEZData: any;
 }) => {
     // Helper function to format a date
     const dateOnly = (date: Date | string): string => {
@@ -18,8 +20,79 @@ const Sidebar = ({
         return date.toDateString();
     };
 
+    // Function to download the current GeoJSON data
+    const downloadGeoJSON = () => {
+        if (!worldEEZData) {
+            alert('No GeoJSON data available to download');
+            return;
+        }
+
+        // Create a cleaned copy of the data without featureIndex
+        const cleanedData = {
+            ...worldEEZData,
+            features: worldEEZData.features.map((feature: any) => {
+                const { featureIndex, ...propertiesWithoutFeatureIndex } = feature.properties || {};
+                return {
+                    ...feature,
+                    properties: propertiesWithoutFeatureIndex
+                };
+            })
+        };
+
+        // Create a JSON string with proper formatting
+        const jsonString = JSON.stringify(cleanedData, null, 2);
+
+        // Create a blob with the JSON data
+        const blob = new Blob([jsonString], { type: 'application/json' });
+
+        // Create a download link
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = url;
+        link.download = 'World-EEZ.geo.json';
+
+        // Trigger download
+        document.body.appendChild(link);
+        link.click();
+
+        // Cleanup
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    };
+
     return (
         <div style={{ padding: '20px', height: '100vh', overflowY: 'auto' }}>
+            <div style={{ marginBottom: '20px', paddingBottom: '15px', borderBottom: '2px solid #ddd' }}>
+                <h3 style={{ marginTop: 0 }}>GeoJSON Editor</h3>
+                <button
+                    onClick={downloadGeoJSON}
+                    disabled={!worldEEZData}
+                    style={{
+                        backgroundColor: worldEEZData ? '#4CAF50' : '#cccccc',
+                        color: 'white',
+                        border: 'none',
+                        padding: '10px 20px',
+                        borderRadius: '5px',
+                        cursor: worldEEZData ? 'pointer' : 'not-allowed',
+                        fontSize: '14px',
+                        fontWeight: 'bold',
+                        width: '100%',
+                        marginTop: '10px'
+                    }}
+                >
+                    📥 Download World-EEZ.geo.json
+                </button>
+                {!worldEEZData && (
+                    <p style={{
+                        fontSize: '12px',
+                        color: '#666',
+                        marginTop: '5px',
+                        fontStyle: 'italic'
+                    }}>
+                        Loading data...
+                    </p>
+                )}
+            </div>
             <h3>Selected Points ({selectedPoints.length})</h3>
 
             {selectedPoints.length === 0 ? (
