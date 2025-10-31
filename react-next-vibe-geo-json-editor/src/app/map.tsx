@@ -201,18 +201,6 @@ function DisplayPosition({ map, setCurrentMarkers, setSelectedTopicGroup, isDraw
                 </button>
                 <button
                     onClick={() => {
-                        if (selectedPointIds.size > 0) {
-                            // Remove points from GeoJSON data
-                            const updatedGeoJSON = removeSelectedPointsFromGeoJSON(selectedPointIds);
-                            if (updatedGeoJSON) {
-                                setWorldEEZData(updatedGeoJSON);
-
-                                // Re-extract polygon points from updated data
-                                const updatedPoints = extractPolygonPoints(updatedGeoJSON);
-                                setPolygonPoints(updatedPoints);
-                            }
-                        }
-
                         setSelectedPointIds(new Set());
                         if (setSelectedPoints) {
                             setSelectedPoints([]);
