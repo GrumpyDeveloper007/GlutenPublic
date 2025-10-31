@@ -306,29 +306,58 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
     const updatePointPositionInGeoJSON = useCallback((pointId: string, newLat: number, newLng: number) => {
         if (!worldEEZData) return worldEEZData;
 
-        const [featureIndexStr, pointIndexStr] = pointId.split('-');
-        const featureIndex = parseInt(featureIndexStr);
-        const pointIndex = parseInt(pointIndexStr);
+        const parts = pointId.split('-');
+        const featureIndex = parseInt(parts[0]);
+        const polygonIndex = parseInt(parts[1]);
+        const pointIndex = parseInt(parts[2]);
 
         const updatedData = {
             ...worldEEZData,
             features: worldEEZData.features.map((feature: any, index: number) => {
-                if (index === featureIndex && feature.geometry && feature.geometry.type === 'Polygon') {
-                    const coordinates = [...feature.geometry.coordinates[0]];
+                if (index === featureIndex && feature.geometry) {
+                    if (feature.geometry.type === 'Polygon') {
+                        const coordinates = [...feature.geometry.coordinates[0]];
 
-                    // Update the specific point
-                    // GeoJSON coordinates are [lng, lat] but we're working with [lat, lng]
-                    if (pointIndex >= 0 && pointIndex < coordinates.length) {
-                        coordinates[pointIndex] = [newLng, newLat];
-                    }
-
-                    return {
-                        ...feature,
-                        geometry: {
-                            ...feature.geometry,
-                            coordinates: [coordinates]
+                        // Update the specific point
+                        // GeoJSON coordinates are [lng, lat] but we're working with [lat, lng]
+                        if (pointIndex >= 0 && pointIndex < coordinates.length && polygonIndex === 0) {
+                            coordinates[pointIndex] = [newLng, newLat];
                         }
-                    };
+
+                        return {
+                            ...feature,
+                            geometry: {
+                                ...feature.geometry,
+                                coordinates: [coordinates]
+                            }
+                        };
+                    } else if (feature.geometry.type === 'MultiPolygon') {
+                        // MultiPolygon: update point in the specific polygon
+                        const polygons = feature.geometry.coordinates.map((polygon: number[][][], idx: number) => {
+                            if (idx === polygonIndex) {
+                                const rings = polygon.map((ring: number[][], ringIdx: number) => {
+                                    if (ringIdx === 0) { // Update outer ring
+                                        const newRing = [...ring];
+                                        if (pointIndex >= 0 && pointIndex < newRing.length) {
+                                            newRing[pointIndex] = [newLng, newLat];
+                                        }
+                                        return newRing;
+                                    }
+                                    return ring;
+                                });
+                                return rings;
+                            }
+                            return polygon;
+                        });
+
+                        return {
+                            ...feature,
+                            geometry: {
+                                ...feature.geometry,
+                                coordinates: polygons
+                            }
+                        };
+                    }
                 }
                 return feature;
             })
@@ -344,48 +373,113 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
 
         const updatedData = {
             ...worldEEZData,
-            features: worldEEZData.features.map((feature: any) => {
-                if (feature.geometry && feature.geometry.type === 'Polygon') {
-                    const featureIndex = feature.properties?.featureIndex;
-                    if (featureIndex !== undefined) {
-                        // Find points to remove for this feature
-                        const pointsToRemove = Array.from(pointIdsToRemove).filter(id =>
-                            id.startsWith(`${featureIndex}-`)
-                        );
+            features: worldEEZData.features.map((feature: any, featureIndex: number) => {
+                if (feature.geometry) {
+                    // Find points to remove for this feature
+                    const pointsToRemove = Array.from(pointIdsToRemove).filter(id => {
+                        const parts = id.split('-');
+                        return parts.length >= 3 && parseInt(parts[0]) === featureIndex;
+                    });
 
-                        if (pointsToRemove.length > 0) {
-                            // Get the point indices to remove
-                            const indicesToRemove = pointsToRemove.map(id =>
-                                parseInt(id.split('-')[1])
-                            ).sort((a, b) => b - a); // Sort in descending order for safe removal
+                    if (pointsToRemove.length > 0) {
+                        if (feature.geometry.type === 'Polygon') {
+                            // Get point indices to remove (polygonIndex should be 0 for regular polygons)
+                            const indicesToRemove = pointsToRemove
+                                .filter(id => {
+                                    const parts = id.split('-');
+                                    return parseInt(parts[1]) === 0; // Only remove from outer polygon
+                                })
+                                .map(id => parseInt(id.split('-')[2])) // Get pointIndex
+                                .sort((a, b) => b - a); // Sort in descending order for safe removal
 
-                            // Remove points from coordinates (outer ring only)
-                            const newCoordinates = [...feature.geometry.coordinates[0]];
-                            indicesToRemove.forEach(index => {
-                                if (index >= 0 && index < newCoordinates.length) {
-                                    newCoordinates.splice(index, 1);
+                            if (indicesToRemove.length > 0) {
+                                // Remove points from coordinates (outer ring only)
+                                const newCoordinates = [...feature.geometry.coordinates[0]];
+                                indicesToRemove.forEach(index => {
+                                    if (index >= 0 && index < newCoordinates.length) {
+                                        newCoordinates.splice(index, 1);
+                                    }
+                                });
+
+                                // Ensure polygon has at least 3 points (minimum for a valid polygon)
+                                if (newCoordinates.length >= 3) {
+                                    return {
+                                        ...feature,
+                                        geometry: {
+                                            ...feature.geometry,
+                                            coordinates: [newCoordinates]
+                                        }
+                                    };
                                 }
+                                // If less than 3 points, return null to filter it out
+                                return null;
+                            }
+                        } else if (feature.geometry.type === 'MultiPolygon') {
+                            // Group points by polygon index
+                            const pointsByPolygon: { [key: number]: number[] } = {};
+                            pointsToRemove.forEach(id => {
+                                const parts = id.split('-');
+                                const polygonIndex = parseInt(parts[1]);
+                                const pointIndex = parseInt(parts[2]);
+                                if (!pointsByPolygon[polygonIndex]) {
+                                    pointsByPolygon[polygonIndex] = [];
+                                }
+                                pointsByPolygon[polygonIndex].push(pointIndex);
                             });
 
-                            // Ensure polygon has at least 3 points (minimum for a valid polygon)
-                            if (newCoordinates.length >= 3) {
+                            // Remove points from each polygon
+                            const newPolygons = feature.geometry.coordinates.map((polygon: number[][][], polygonIndex: number) => {
+                                const indicesToRemove = pointsByPolygon[polygonIndex];
+                                if (indicesToRemove && indicesToRemove.length > 0) {
+                                    const sortedIndices = [...indicesToRemove].sort((a, b) => b - a);
+                                    const outerRing = [...polygon[0]]; // Get outer ring
+
+                                    sortedIndices.forEach(index => {
+                                        if (index >= 0 && index < outerRing.length) {
+                                            outerRing.splice(index, 1);
+                                        }
+                                    });
+
+                                    // Ensure polygon has at least 3 points
+                                    if (outerRing.length >= 3) {
+                                        return [outerRing, ...polygon.slice(1)]; // Keep outer ring and all holes
+                                    }
+                                    // If less than 3 points, return null to filter out this polygon
+                                    return null;
+                                }
+                                return polygon;
+                            }).filter((polygon: any) => polygon !== null);
+
+                            // Only return feature if it has at least one valid polygon
+                            if (newPolygons.length > 0) {
                                 return {
                                     ...feature,
                                     geometry: {
                                         ...feature.geometry,
-                                        coordinates: [newCoordinates]
+                                        coordinates: newPolygons
                                     }
                                 };
                             }
+                            // If no valid polygons remain, return null to filter out
+                            return null;
                         }
                     }
                 }
                 return feature;
             }).filter((feature: any) => {
-                // Remove features that have less than 3 points (invalid polygons)
+                // Remove features that are null or have invalid geometries
+                if (!feature) return false;
+
+                // Validate Polygon geometries
                 if (feature.geometry && feature.geometry.type === 'Polygon') {
-                    return feature.geometry.coordinates[0].length >= 3;
+                    return feature.geometry.coordinates[0] && feature.geometry.coordinates[0].length >= 3;
                 }
+
+                // Validate MultiPolygon geometries
+                if (feature.geometry && feature.geometry.type === 'MultiPolygon') {
+                    return feature.geometry.coordinates && feature.geometry.coordinates.length > 0;
+                }
+
                 return true;
             })
         };
@@ -460,18 +554,37 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
 
         if (geoJsonData && geoJsonData.features) {
             geoJsonData.features.forEach((feature: any, featureIndex: number) => {
-                if (feature.geometry && feature.geometry.type === 'Polygon') {
-                    const coordinates = feature.geometry.coordinates[0]; // Get outer ring
-                    coordinates.forEach((coord: number[], pointIndex: number) => {
-                        points.push({
-                            id: `${featureIndex}-${pointIndex}`,
-                            position: [coord[1], coord[0]] as LatLngTuple, // [lat, lng]
-                            featureIndex,
-                            pointIndex,
-                            country: feature.properties?.Country || 'Unknown',
-                            iso: feature.properties?.ISO_A3 || 'N/A'
+                if (feature.geometry) {
+                    if (feature.geometry.type === 'Polygon') {
+                        const coordinates = feature.geometry.coordinates[0]; // Get outer ring
+                        coordinates.forEach((coord: number[], pointIndex: number) => {
+                            points.push({
+                                id: `${featureIndex}-0-${pointIndex}`, // polygonIndex is 0 for regular polygons
+                                position: [coord[1], coord[0]] as LatLngTuple, // [lat, lng]
+                                featureIndex,
+                                polygonIndex: 0,
+                                pointIndex,
+                                country: feature.properties?.Country || 'Unknown',
+                                iso: feature.properties?.ISO_A3 || 'N/A'
+                            });
                         });
-                    });
+                    } else if (feature.geometry.type === 'MultiPolygon') {
+                        // MultiPolygon: coordinates is array of polygons, each polygon has rings
+                        feature.geometry.coordinates.forEach((polygon: number[][][], polygonIndex: number) => {
+                            const outerRing = polygon[0]; // First ring is outer ring
+                            outerRing.forEach((coord: number[], pointIndex: number) => {
+                                points.push({
+                                    id: `${featureIndex}-${polygonIndex}-${pointIndex}`,
+                                    position: [coord[1], coord[0]] as LatLngTuple, // [lat, lng]
+                                    featureIndex,
+                                    polygonIndex,
+                                    pointIndex,
+                                    country: feature.properties?.Country || 'Unknown',
+                                    iso: feature.properties?.ISO_A3 || 'N/A'
+                                });
+                            });
+                        });
+                    }
                 }
             });
         }
