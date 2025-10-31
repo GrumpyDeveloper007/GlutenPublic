@@ -36,6 +36,51 @@ const createSquareIcon = (color: string = '#ff0000', size: number = 4) => {
 const squareIcon = createSquareIcon('#ff0000');
 const selectedSquareIcon = createSquareIcon('#ffff00', 6); // Yellow for selected points, slightly larger
 
+// Component to control dragging based on Ctrl key
+function DragControl() {
+    const map = useMapEvents({});
+
+    useEffect(() => {
+        // Disable dragging by default
+        map.dragging.disable();
+
+        const handleKeyDown = (e: KeyboardEvent) => {
+            if (e.ctrlKey || e.metaKey) { // metaKey for Mac Cmd key
+                map.dragging.enable();
+            }
+        };
+
+        const handleKeyUp = (e: KeyboardEvent) => {
+            if (!e.ctrlKey && !e.metaKey) {
+                map.dragging.disable();
+            }
+        };
+
+        // Add event listeners to window to capture Ctrl key events
+        window.addEventListener('keydown', handleKeyDown);
+        window.addEventListener('keyup', handleKeyUp);
+
+        // Also check on mouse events (in case Ctrl is released while mouse is down)
+        const handleMouseUp = (e: MouseEvent) => {
+            if (!e.ctrlKey && !e.metaKey) {
+                map.dragging.disable();
+            }
+        };
+
+        window.addEventListener('mouseup', handleMouseUp);
+
+        return () => {
+            window.removeEventListener('keydown', handleKeyDown);
+            window.removeEventListener('keyup', handleKeyUp);
+            window.removeEventListener('mouseup', handleMouseUp);
+            map.dragging.disable();
+        };
+    }, [map]);
+
+    return null;
+}
+
+
 // Selection box component
 function SelectionBox({
     isDrawing,
@@ -100,9 +145,6 @@ function DisplayPosition({ map, setCurrentMarkers, setSelectedTopicGroup, isDraw
 
 
     const onMove = useCallback(() => {
-        var countriesInView = mapDataService.getCountriesInView(map.getBounds());
-        //setcountriesInView(countriesInView);
-        console.log(countriesInView);
         const requests: Promise<any>[] = [];
 
         setLoading(true);
@@ -114,9 +156,6 @@ function DisplayPosition({ map, setCurrentMarkers, setSelectedTopicGroup, isDraw
         if (loading) return;
         if (!showPins) return;
         setShowPins(false);
-
-
-        var countryNames = mapDataService.getCountriesInView(map.getBounds());
 
         var temppinCount = 0;
         const markers: any[] = [];
@@ -231,6 +270,7 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
     const [isDrawing, setIsDrawing] = useState(false);
     const [selectionBox, setSelectionBox] = useState<{ start: LatLngTuple, end: LatLngTuple } | null>(null);
     const [showDeleteMessage, setShowDeleteMessage] = useState(false);
+    const [geoJsonKey, setGeoJsonKey] = useState(0);
 
     const center: LatLngTuple = [0, 0]
     const zoom = 8
@@ -244,6 +284,51 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
             console.log(`Polygon ${selectedPolygonIndex} selected - showing its points`);
         }
     }, [selectedPolygonIndex]);
+
+    // Update GeoJSON key when data changes to force re-render
+    const prevDataRef = useRef<any>(null);
+    useEffect(() => {
+        if (worldEEZData && prevDataRef.current !== worldEEZData) {
+            prevDataRef.current = worldEEZData;
+            setGeoJsonKey(prev => prev + 1);
+        }
+    }, [worldEEZData]);
+
+    // Function to update a point position in GeoJSON data
+    const updatePointPositionInGeoJSON = useCallback((pointId: string, newLat: number, newLng: number) => {
+        if (!worldEEZData) return worldEEZData;
+
+        const [featureIndexStr, pointIndexStr] = pointId.split('-');
+        const featureIndex = parseInt(featureIndexStr);
+        const pointIndex = parseInt(pointIndexStr);
+
+        const updatedData = {
+            ...worldEEZData,
+            features: worldEEZData.features.map((feature: any, index: number) => {
+                if (index === featureIndex && feature.geometry && feature.geometry.type === 'Polygon') {
+                    const coordinates = [...feature.geometry.coordinates[0]];
+
+                    // Update the specific point
+                    // GeoJSON coordinates are [lng, lat] but we're working with [lat, lng]
+                    if (pointIndex >= 0 && pointIndex < coordinates.length) {
+                        coordinates[pointIndex] = [newLng, newLat];
+                    }
+
+                    return {
+                        ...feature,
+                        geometry: {
+                            ...feature.geometry,
+                            coordinates: [coordinates]
+                        }
+                    };
+                }
+                return feature;
+            })
+        };
+
+        console.log(`Updated point ${pointId} to [${newLat}, ${newLng}]`);
+        return updatedData;
+    }, [worldEEZData]);
 
     // Function to remove selected points from GeoJSON data
     const removeSelectedPointsFromGeoJSON = useCallback((pointIdsToRemove: Set<string>) => {
@@ -362,7 +447,7 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
     }, [polygonPoints, selectedPointIds, setSelectedPoints]);
 
     // Function to extract all coordinate points from GeoJSON
-    const extractPolygonPoints = (geoJsonData: any) => {
+    const extractPolygonPoints = useCallback((geoJsonData: any) => {
         const points: any[] = [];
 
         if (geoJsonData && geoJsonData.features) {
@@ -385,7 +470,7 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
 
         console.log(`Extracted ${points.length} polygon points`);
         return points;
-    };
+    }, []);
 
     // Load geo.json data
     useEffect(() => {
@@ -475,12 +560,14 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 />
+                <DragControl />
                 <SelectionBox
                     isDrawing={isDrawing}
                     onSelectionComplete={handleSelectionComplete}
                 />
                 {worldEEZData && (
                     <GeoJSON
+                        key={`geojson-${geoJsonKey}`}
                         data={worldEEZData}
                         style={styleEEZ}
                         onEachFeature={onEachFeature}
@@ -495,6 +582,33 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                                 key={point.id}
                                 position={point.position}
                                 icon={isSelected ? selectedSquareIcon : squareIcon}
+                                draggable={true}
+                                eventHandlers={{
+                                    dragend: (e) => {
+                                        const marker = e.target;
+                                        const newPosition = marker.getLatLng();
+                                        const newLat = newPosition.lat;
+                                        const newLng = newPosition.lng;
+
+                                        console.log(`Point ${point.id} moved to [${newLat}, ${newLng}]`);
+
+                                        // Update GeoJSON data
+                                        const updatedGeoJSON = updatePointPositionInGeoJSON(point.id, newLat, newLng);
+                                        if (updatedGeoJSON) {
+                                            setWorldEEZData(updatedGeoJSON);
+
+                                            // Re-extract polygon points from updated data
+                                            const updatedPoints = extractPolygonPoints(updatedGeoJSON);
+                                            setPolygonPoints(updatedPoints);
+
+                                            // Update selected points if this point is selected
+                                            if (setSelectedPoints && isSelected) {
+                                                const selectedPointsList = updatedPoints.filter(p => selectedPointIds.has(p.id));
+                                                setSelectedPoints(selectedPointsList);
+                                            }
+                                        }
+                                    }
+                                }}
                             >
                                 <Popup>
                                     <div>
@@ -504,7 +618,8 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                                         Feature: {point.featureIndex}<br />
                                         Point: {point.pointIndex}<br />
                                         Lat: {point.position[0].toFixed(6)}<br />
-                                        Lng: {point.position[1].toFixed(6)}
+                                        Lng: {point.position[1].toFixed(6)}<br />
+                                        <em>Drag to move this point</em>
                                     </div>
                                 </Popup>
                             </Marker>
@@ -513,7 +628,7 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                 {currentMarkers}
             </MapContainer>
         ),
-        [currentMarkers, worldEEZData, polygonPoints, selectedPolygonIndex, selectedPointIds, isDrawing, showDeleteMessage],
+        [currentMarkers, worldEEZData, polygonPoints, selectedPolygonIndex, selectedPointIds, isDrawing, showDeleteMessage, updatePointPositionInGeoJSON, extractPolygonPoints, setPolygonPoints, setWorldEEZData, setSelectedPoints, geoJsonKey],
     )
 
     return (
