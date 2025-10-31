@@ -314,6 +314,15 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
         const updatedData = {
             ...worldEEZData,
             features: worldEEZData.features.map((feature: any, index: number) => {
+                // Always ensure featureIndex is preserved in properties
+                const updatedFeature = {
+                    ...feature,
+                    properties: {
+                        ...feature.properties,
+                        featureIndex: index
+                    }
+                };
+
                 if (index === featureIndex && feature.geometry) {
                     if (feature.geometry.type === 'Polygon') {
                         const coordinates = [...feature.geometry.coordinates[0]];
@@ -325,7 +334,7 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                         }
 
                         return {
-                            ...feature,
+                            ...updatedFeature,
                             geometry: {
                                 ...feature.geometry,
                                 coordinates: [coordinates]
@@ -351,7 +360,7 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                         });
 
                         return {
-                            ...feature,
+                            ...updatedFeature,
                             geometry: {
                                 ...feature.geometry,
                                 coordinates: polygons
@@ -359,7 +368,7 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                         };
                     }
                 }
-                return feature;
+                return updatedFeature;
             })
         };
 
@@ -632,8 +641,8 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
     }, []);
 
     // Style function for EEZ polygons
-    const styleEEZ = (feature: any) => {
-        const featureIndex = feature.properties?.featureIndex || 0;
+    const styleEEZ = useCallback((feature: any) => {
+        const featureIndex = feature.properties?.featureIndex ?? 0;
         const isSelected = selectedPolygonIndex === featureIndex;
 
         return {
@@ -643,28 +652,34 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
             color: isSelected ? '#00ff00' : '#ff0000',
             fillOpacity: isSelected ? 0.5 : 0.3 // More opaque if selected
         };
-    };
+    }, [selectedPolygonIndex]);
 
     // Event handlers for EEZ polygons
-    const onEachFeature = (feature: any, layer: any) => {
-        const featureIndex = feature.properties?.featureIndex || 0;
+    const onEachFeature = useCallback((feature: any, layer: any) => {
+        const featureIndex = feature.properties?.featureIndex ?? 0;
+
+        // Remove any existing click handlers to avoid duplicates
+        layer.off('click');
 
         // Add click handler for polygon selection
         layer.on('click', (e: any) => {
             console.log('Polygon clicked:', featureIndex, feature.properties?.Country);
-            if (selectedPolygonIndex === featureIndex) {
-                // If clicking the same polygon, deselect it
-                setSelectedPolygonIndex(null);
-            } else {
-                // Select this polygon
-                setSelectedPolygonIndex(featureIndex);
-            }
+            setSelectedPolygonIndex((currentSelected: number | null) => {
+                if (currentSelected === featureIndex) {
+                    // If clicking the same polygon, deselect it
+                    return null;
+                } else {
+                    // Select this polygon
+                    return featureIndex;
+                }
+            });
         });
 
         if (feature.properties && feature.properties.Country) {
-            layer.bindPopup(`<b>${feature.properties.Country}</b><br/>ISO: ${feature.properties.ISO_A3 || 'N/A'}<br/><br/>Click to ${selectedPolygonIndex === featureIndex ? 'deselect' : 'select'} this polygon`);
+            const isCurrentlySelected = selectedPolygonIndex === featureIndex;
+            layer.bindPopup(`<b>${feature.properties.Country}</b><br/>ISO: ${feature.properties.ISO_A3 || 'N/A'}<br/><br/>Click to ${isCurrentlySelected ? 'deselect' : 'select'} this polygon`);
         }
-    };
+    }, [selectedPolygonIndex]);
 
     const displayMap = useMemo(
         () => (
@@ -749,7 +764,7 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                 {currentMarkers}
             </MapContainer>
         ),
-        [currentMarkers, worldEEZData, polygonPoints, selectedPolygonIndex, selectedPointIds, isDrawing, showDeleteMessage, updatePointPositionInGeoJSON, extractPolygonPoints, setPolygonPoints, setWorldEEZData, setSelectedPoints, geoJsonKey],
+        [currentMarkers, worldEEZData, polygonPoints, selectedPolygonIndex, selectedPointIds, isDrawing, showDeleteMessage, updatePointPositionInGeoJSON, extractPolygonPoints, setPolygonPoints, setWorldEEZData, setSelectedPoints, geoJsonKey, onEachFeature, styleEEZ],
     )
 
     return (
