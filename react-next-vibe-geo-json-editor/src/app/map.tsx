@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { MapContainer, Marker, Popup, TileLayer, GeoJSON, useMapEvents } from "react-leaflet";
-import { LatLngTuple, Icon, LatLngBounds } from "leaflet";
+import { LatLngTuple, Icon, LatLngBounds, DomEvent, LeafletMouseEvent } from "leaflet";
 import { Map as LeafletMap } from 'leaflet';
 import { mapDataService } from './_services/index';
 import { TopicGroupClass } from "@/_model/model";
@@ -36,43 +36,89 @@ const createSquareIcon = (color: string = '#ff0000', size: number = 4) => {
 const squareIcon = createSquareIcon('#ff0000');
 const selectedSquareIcon = createSquareIcon('#ffff00', 6); // Yellow for selected points, slightly larger
 
-// Component to control dragging based on Ctrl key
-function DragControl() {
+export function prepareGeoJSONForEditor(data: any) {
+    if (!data || data.type !== 'FeatureCollection' || !Array.isArray(data.features)) {
+        throw new Error('Expected a GeoJSON FeatureCollection with a features array');
+    }
+    return {
+        ...data,
+        features: data.features.map((feature: any, index: number) => ({
+            ...feature,
+            properties: {
+                ...feature.properties,
+                featureIndex: index,
+            },
+        })),
+    };
+}
+
+export type MapInteractionMode = 'move' | 'select';
+
+function isVertexMarkerTarget(target: EventTarget | null): boolean {
+    if (!(target instanceof Element)) {
+        return false;
+    }
+    return Boolean(target.closest('.leaflet-marker-icon'));
+}
+
+// Pan the map by left-dragging anywhere (except vertex markers) in move mode
+function MapPanControl({ interactionMode }: { interactionMode: MapInteractionMode }) {
     const map = useMapEvents({});
+    const panningRef = useRef(false);
+    const lastPointRef = useRef<{ x: number; y: number } | null>(null);
+    const interactionModeRef = useRef(interactionMode);
+    interactionModeRef.current = interactionMode;
 
     useEffect(() => {
-        // Disable dragging by default
         map.dragging.disable();
 
-        const handleKeyDown = (e: KeyboardEvent) => {
-            if (e.ctrlKey || e.metaKey) { // metaKey for Mac Cmd key
-                map.dragging.enable();
+        const onDocumentMouseMove = (e: MouseEvent) => {
+            if (!panningRef.current || !lastPointRef.current) {
+                return;
             }
+            const dx = e.clientX - lastPointRef.current.x;
+            const dy = e.clientY - lastPointRef.current.y;
+            if (dx !== 0 || dy !== 0) {
+                map.panBy([-dx, -dy], { animate: false });
+            }
+            lastPointRef.current = { x: e.clientX, y: e.clientY };
         };
 
-        const handleKeyUp = (e: KeyboardEvent) => {
-            if (!e.ctrlKey && !e.metaKey) {
-                map.dragging.disable();
-            }
+        const endPan = () => {
+            panningRef.current = false;
+            lastPointRef.current = null;
         };
 
-        // Add event listeners to window to capture Ctrl key events
-        window.addEventListener('keydown', handleKeyDown);
-        window.addEventListener('keyup', handleKeyUp);
-
-        // Also check on mouse events (in case Ctrl is released while mouse is down)
-        const handleMouseUp = (e: MouseEvent) => {
-            if (!e.ctrlKey && !e.metaKey) {
-                map.dragging.disable();
+        const onMouseDown = (e: LeafletMouseEvent) => {
+            if (interactionModeRef.current !== 'move') {
+                return;
             }
+            if (e.originalEvent.button !== 0) {
+                return;
+            }
+            if (isVertexMarkerTarget(e.originalEvent.target)) {
+                return;
+            }
+            if (e.originalEvent.target instanceof Element && e.originalEvent.target.closest('.leaflet-popup')) {
+                return;
+            }
+            panningRef.current = true;
+            lastPointRef.current = {
+                x: e.originalEvent.clientX,
+                y: e.originalEvent.clientY,
+            };
+            DomEvent.stopPropagation(e);
         };
 
-        window.addEventListener('mouseup', handleMouseUp);
+        map.on('mousedown', onMouseDown);
+        document.addEventListener('mousemove', onDocumentMouseMove);
+        document.addEventListener('mouseup', endPan);
 
         return () => {
-            window.removeEventListener('keydown', handleKeyDown);
-            window.removeEventListener('keyup', handleKeyUp);
-            window.removeEventListener('mouseup', handleMouseUp);
+            map.off('mousedown', onMouseDown);
+            document.removeEventListener('mousemove', onDocumentMouseMove);
+            document.removeEventListener('mouseup', endPan);
+            endPan();
             map.dragging.disable();
         };
     }, [map]);
@@ -83,37 +129,47 @@ function DragControl() {
 
 // Selection box component
 function SelectionBox({
-    isDrawing,
+    interactionMode,
     onSelectionComplete
 }: {
-    isDrawing: boolean;
+    interactionMode: MapInteractionMode;
     onSelectionComplete: (bounds: LatLngBounds) => void;
 }) {
     const [currentBox, setCurrentBox] = useState<{ start: LatLngTuple, end: LatLngTuple } | null>(null);
 
     useMapEvents({
         mousedown: (e) => {
-            //if (isDrawing) {
+            if (interactionMode !== 'select') {
+                return;
+            }
             const startPoint: LatLngTuple = [e.latlng.lat, e.latlng.lng];
             setCurrentBox({ start: startPoint, end: startPoint });
-            //}
+            DomEvent.stopPropagation(e);
         },
         mousemove: (e) => {
-            if (currentBox) {//isDrawing
-                const endPoint: LatLngTuple = [e.latlng.lat, e.latlng.lng];
-                setCurrentBox({ ...currentBox, end: endPoint });
+            if (interactionMode !== 'select' || !currentBox) {
+                return;
             }
+            const endPoint: LatLngTuple = [e.latlng.lat, e.latlng.lng];
+            setCurrentBox({ ...currentBox, end: endPoint });
         },
         mouseup: (e) => {
-            if (currentBox) {//isDrawing
-                const endPoint: LatLngTuple = [e.latlng.lat, e.latlng.lng];
-                const bounds = new LatLngBounds(
-                    [Math.min(currentBox.start[0], endPoint[0]), Math.min(currentBox.start[1], endPoint[1])],
-                    [Math.max(currentBox.start[0], endPoint[0]), Math.max(currentBox.start[1], endPoint[1])]
-                );
-                onSelectionComplete(bounds);
-                setCurrentBox(null);
+            if (interactionMode !== 'select' || !currentBox) {
+                return;
             }
+            const endPoint: LatLngTuple = [e.latlng.lat, e.latlng.lng];
+            const latSpan = Math.abs(currentBox.start[0] - endPoint[0]);
+            const lngSpan = Math.abs(currentBox.start[1] - endPoint[1]);
+            if (latSpan < 1e-7 && lngSpan < 1e-7) {
+                setCurrentBox(null);
+                return;
+            }
+            const bounds = new LatLngBounds(
+                [Math.min(currentBox.start[0], endPoint[0]), Math.min(currentBox.start[1], endPoint[1])],
+                [Math.max(currentBox.start[0], endPoint[0]), Math.max(currentBox.start[1], endPoint[1])]
+            );
+            onSelectionComplete(bounds);
+            setCurrentBox(null);
         }
     });
 
@@ -124,8 +180,9 @@ interface DisplayPositionProps {
     map: LeafletMap;
     setCurrentMarkers: React.Dispatch<React.SetStateAction<any[]>>;
     setSelectedTopicGroup: React.Dispatch<React.SetStateAction<TopicGroupClass>>;
-    isDrawing: boolean;
-    setIsDrawing: React.Dispatch<React.SetStateAction<boolean>>;
+    interactionMode: MapInteractionMode;
+    setInteractionMode: React.Dispatch<React.SetStateAction<MapInteractionMode>>;
+    selectedPolygonIndex: number | null;
     selectedPointIds: Set<string>;
     setSelectedPointIds: React.Dispatch<React.SetStateAction<Set<string>>>;
     setSelectedPoints?: React.Dispatch<React.SetStateAction<any[]>>;
@@ -136,7 +193,7 @@ interface DisplayPositionProps {
     setPolygonPoints: React.Dispatch<React.SetStateAction<any[]>>;
 }
 
-function DisplayPosition({ map, setCurrentMarkers, setSelectedTopicGroup, isDrawing, setIsDrawing, selectedPointIds, setSelectedPointIds, setSelectedPoints, showDeleteMessage, removeSelectedPointsFromGeoJSON, setWorldEEZData, extractPolygonPoints, setPolygonPoints }: DisplayPositionProps) {
+function DisplayPosition({ map, setCurrentMarkers, setSelectedTopicGroup, interactionMode, setInteractionMode, selectedPolygonIndex, selectedPointIds, setSelectedPointIds, setSelectedPoints, showDeleteMessage, removeSelectedPointsFromGeoJSON, setWorldEEZData, extractPolygonPoints, setPolygonPoints }: DisplayPositionProps) {
     const [position, setPosition] = useState(() => map.getCenter())
     const [pinCount, setPinCount] = useState(0)
     const [loading, setLoading] = useState(true)
@@ -185,19 +242,36 @@ function DisplayPosition({ map, setCurrentMarkers, setSelectedTopicGroup, isDraw
                 loading: {loading ? 'true' : 'false'}
             </p>
             <div>
+                <div style={{ margin: '5px 0', fontSize: '12px', fontWeight: 'bold' }}>Mode</div>
                 <button
-                    onClick={() => setIsDrawing(!isDrawing)}
+                    type="button"
+                    onClick={() => setInteractionMode('move')}
                     style={{
-                        background: isDrawing ? '#ff0000' : '#00ff00',
-                        color: 'white',
+                        background: interactionMode === 'move' ? '#1976d2' : '#e0e0e0',
+                        color: interactionMode === 'move' ? 'white' : '#333',
                         border: 'none',
                         padding: '5px 10px',
-                        margin: '5px',
+                        margin: '5px 5px 5px 0',
                         borderRadius: '3px',
-                        cursor: 'pointer'
+                        cursor: 'pointer',
                     }}
                 >
-                    {isDrawing ? 'Stop Selection' : 'Start Selection'}
+                    Map movement
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setInteractionMode('select')}
+                    style={{
+                        background: interactionMode === 'select' ? '#c62828' : '#e0e0e0',
+                        color: interactionMode === 'select' ? 'white' : '#333',
+                        border: 'none',
+                        padding: '5px 10px',
+                        margin: '5px 0',
+                        borderRadius: '3px',
+                        cursor: 'pointer',
+                    }}
+                >
+                    Point selection
                 </button>
                 <button
                     onClick={() => {
@@ -219,9 +293,16 @@ function DisplayPosition({ map, setCurrentMarkers, setSelectedTopicGroup, isDraw
                     Clear Selection ({selectedPointIds.size})
                 </button>
             </div>
-            {isDrawing && (
-                <p style={{ color: 'red', fontSize: '12px', margin: '5px 0' }}>
-                    Click and drag to select points
+            {interactionMode === 'move' && (
+                <p style={{ color: '#1976d2', fontSize: '12px', margin: '5px 0' }}>
+                    Drag anywhere to pan. Click a polygon to choose it for editing.
+                </p>
+            )}
+            {interactionMode === 'select' && (
+                <p style={{ color: '#c62828', fontSize: '12px', margin: '5px 0' }}>
+                    {selectedPolygonIndex === null
+                        ? 'Select a polygon first, then drag a box over its points.'
+                        : 'Drag a box to select points on the active polygon, then press Delete.'}
                 </p>
             )}
             {showDeleteMessage && (
@@ -242,24 +323,40 @@ function DisplayPosition({ map, setCurrentMarkers, setSelectedTopicGroup, isDraw
 }
 
 
+export type GeoJSONImportRequest = { data: any; id: number };
+
 interface MapProps {
     setSelectedTopicGroup: React.Dispatch<React.SetStateAction<TopicGroupClass>>;
     selectedPoints?: any[];
     setSelectedPoints?: React.Dispatch<React.SetStateAction<any[]>>;
     setWorldEEZData?: React.Dispatch<React.SetStateAction<any>>;
+    importedGeoJSON?: GeoJSONImportRequest | null;
+    onImportedGeoJSONApplied?: () => void;
 }
 
-export default function Map({ setSelectedTopicGroup, selectedPoints, setSelectedPoints, setWorldEEZData: setParentWorldEEZData }: MapProps) {
+export default function Map({
+    setSelectedTopicGroup,
+    selectedPoints,
+    setSelectedPoints,
+    setWorldEEZData: setParentWorldEEZData,
+    importedGeoJSON,
+    onImportedGeoJSONApplied,
+}: MapProps) {
     const [map, setMap] = useState<LeafletMap | null>(null);
     const [currentMarkers, setCurrentMarkers] = useState<any[]>([]);
     const [worldEEZData, setWorldEEZData] = useState<any>(null);
     const [polygonPoints, setPolygonPoints] = useState<any[]>([]);
     const [selectedPolygonIndex, setSelectedPolygonIndex] = useState<number | null>(null);
     const [selectedPointIds, setSelectedPointIds] = useState<Set<string>>(new Set());
-    const [isDrawing, setIsDrawing] = useState(false);
-    const [selectionBox, setSelectionBox] = useState<{ start: LatLngTuple, end: LatLngTuple } | null>(null);
+    const [interactionMode, setInteractionMode] = useState<MapInteractionMode>('move');
     const [showDeleteMessage, setShowDeleteMessage] = useState(false);
     const [geoJsonKey, setGeoJsonKey] = useState(0);
+    const undoStackRef = useRef<any[]>([]);
+    const redoStackRef = useRef<any[]>([]);
+    const worldEEZDataRef = useRef<any>(null);
+    const MAX_UNDO_HISTORY = 50;
+
+    worldEEZDataRef.current = worldEEZData;
 
     // Sync worldEEZData to parent component when it changes
     useEffect(() => {
@@ -485,47 +582,14 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
         return updatedData;
     }, [worldEEZData]);
 
-    // Handle keyboard events for point removal
-    useEffect(() => {
-        const handleKeyDown = (event: KeyboardEvent) => {
-            if (event.key === 'Delete' || event.key === 'Backspace') {
-                if (selectedPointIds.size > 0) {
-                    console.log('Delete key pressed - removing selected points');
-
-                    // Remove points from GeoJSON data
-                    const updatedGeoJSON = removeSelectedPointsFromGeoJSON(selectedPointIds);
-                    if (updatedGeoJSON) {
-                        setWorldEEZData(updatedGeoJSON);
-
-                        // Re-extract polygon points from updated data
-                        const updatedPoints = extractPolygonPoints(updatedGeoJSON);
-                        setPolygonPoints(updatedPoints);
-                    }
-
-                    setSelectedPointIds(new Set());
-                    if (setSelectedPoints) {
-                        setSelectedPoints([]);
-                    }
-                    // Show delete message briefly
-                    setShowDeleteMessage(true);
-                    setTimeout(() => setShowDeleteMessage(false), 2000);
-                }
-            }
-        };
-
-        // Add event listener to document
-        document.addEventListener('keydown', handleKeyDown);
-
-        // Cleanup event listener on component unmount
-        return () => {
-            document.removeEventListener('keydown', handleKeyDown);
-        };
-    }, [selectedPointIds, setSelectedPoints, removeSelectedPointsFromGeoJSON]);
-
     // Handle selection box completion
     const handleSelectionComplete = useCallback((bounds: LatLngBounds) => {
+        if (selectedPolygonIndex === null) {
+            return;
+        }
         console.log('Selection box completed:', bounds);
         const pointsInBounds = polygonPoints.filter(point =>
+            point.featureIndex === selectedPolygonIndex &&
             bounds.contains([point.position[0], point.position[1]])
         );
         console.log(`Found ${pointsInBounds.length} points in selection box`);
@@ -536,16 +600,12 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
         });
         setSelectedPointIds(newSelectedIds);
 
-        // Update the selected points for the sidebar
         if (setSelectedPoints) {
             const selectedPointsList = polygonPoints.filter(point => newSelectedIds.has(point.id));
             setSelectedPoints(selectedPointsList);
         }
+    }, [polygonPoints, selectedPointIds, selectedPolygonIndex, setSelectedPoints]);
 
-        setIsDrawing(false);
-    }, [polygonPoints, selectedPointIds, setSelectedPoints]);
-
-    // Function to extract all coordinate points from GeoJSON
     const extractPolygonPoints = useCallback((geoJsonData: any) => {
         const points: any[] = [];
 
@@ -590,6 +650,96 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
         return points;
     }, []);
 
+    const applyGeoJSONState = useCallback((data: any) => {
+        setWorldEEZData(data);
+        setPolygonPoints(extractPolygonPoints(data));
+    }, [extractPolygonPoints]);
+
+    const commitGeoJSONChange = useCallback((newData: any) => {
+        const current = worldEEZDataRef.current;
+        if (current) {
+            undoStackRef.current.push(structuredClone(current));
+            if (undoStackRef.current.length > MAX_UNDO_HISTORY) {
+                undoStackRef.current.shift();
+            }
+            redoStackRef.current = [];
+        }
+        applyGeoJSONState(newData);
+    }, [applyGeoJSONState]);
+
+    const undoGeoJSONChange = useCallback(() => {
+        if (undoStackRef.current.length === 0) return;
+        const current = worldEEZDataRef.current;
+        if (current) {
+            redoStackRef.current.push(structuredClone(current));
+        }
+        const previous = undoStackRef.current.pop();
+        if (previous) {
+            applyGeoJSONState(previous);
+            setSelectedPointIds(new Set());
+            if (setSelectedPoints) {
+                setSelectedPoints([]);
+            }
+        }
+    }, [applyGeoJSONState, setSelectedPoints]);
+
+    const redoGeoJSONChange = useCallback(() => {
+        if (redoStackRef.current.length === 0) return;
+        const current = worldEEZDataRef.current;
+        if (current) {
+            undoStackRef.current.push(structuredClone(current));
+        }
+        const next = redoStackRef.current.pop();
+        if (next) {
+            applyGeoJSONState(next);
+            setSelectedPointIds(new Set());
+            if (setSelectedPoints) {
+                setSelectedPoints([]);
+            }
+        }
+    }, [applyGeoJSONState, setSelectedPoints]);
+
+    useEffect(() => {
+        const handleKeyDown = (event: KeyboardEvent) => {
+            const mod = event.ctrlKey || event.metaKey;
+            if (mod && event.key.toLowerCase() === 'z' && !event.shiftKey) {
+                event.preventDefault();
+                undoGeoJSONChange();
+                return;
+            }
+            if (mod && (event.key.toLowerCase() === 'y' || (event.key.toLowerCase() === 'z' && event.shiftKey))) {
+                event.preventDefault();
+                redoGeoJSONChange();
+                return;
+            }
+
+            if (event.key === 'Delete' || event.key === 'Backspace') {
+                if (interactionMode !== 'select' || selectedPointIds.size === 0) {
+                    return;
+                }
+                console.log('Delete key pressed - removing selected points');
+
+                const updatedGeoJSON = removeSelectedPointsFromGeoJSON(selectedPointIds);
+                if (updatedGeoJSON) {
+                    commitGeoJSONChange(updatedGeoJSON);
+                }
+
+                setSelectedPointIds(new Set());
+                if (setSelectedPoints) {
+                    setSelectedPoints([]);
+                }
+                setShowDeleteMessage(true);
+                setTimeout(() => setShowDeleteMessage(false), 2000);
+            }
+        };
+
+        document.addEventListener('keydown', handleKeyDown);
+
+        return () => {
+            document.removeEventListener('keydown', handleKeyDown);
+        };
+    }, [interactionMode, selectedPointIds, setSelectedPoints, removeSelectedPointsFromGeoJSON, commitGeoJSONChange, undoGeoJSONChange, redoGeoJSONChange]);
+
     // Load geo.json data
     useEffect(() => {
         console.log('Attempting to load EEZ data...');
@@ -605,17 +755,7 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                 console.log('Loaded EEZ data successfully:', data);
                 console.log('Number of features:', data.features ? data.features.length : 'No features array');
 
-                // Add featureIndex to each feature for selection tracking
-                const processedData = {
-                    ...data,
-                    features: data.features.map((feature: any, index: number) => ({
-                        ...feature,
-                        properties: {
-                            ...feature.properties,
-                            featureIndex: index
-                        }
-                    }))
-                };
+                const processedData = prepareGeoJSONForEditor(data);
 
                 setWorldEEZData(processedData);
 
@@ -627,6 +767,29 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                 console.error('Error loading EEZ data:', error);
             });
     }, []);
+
+    useEffect(() => {
+        if (!importedGeoJSON) {
+            return;
+        }
+        try {
+            const processedData = prepareGeoJSONForEditor(importedGeoJSON.data);
+            undoStackRef.current = [];
+            redoStackRef.current = [];
+            setSelectedPolygonIndex(null);
+            setSelectedPointIds(new Set());
+            if (setSelectedPoints) {
+                setSelectedPoints([]);
+            }
+            applyGeoJSONState(processedData);
+            setGeoJsonKey((prev) => prev + 1);
+        } catch (error) {
+            console.error('Error loading imported GeoJSON:', error);
+            alert(error instanceof Error ? error.message : 'Invalid GeoJSON file');
+        } finally {
+            onImportedGeoJSONApplied?.();
+        }
+    }, [importedGeoJSON, applyGeoJSONState, setSelectedPoints, onImportedGeoJSONApplied]);
 
     // Style function for EEZ polygons
     const styleEEZ = useCallback((feature: any) => {
@@ -665,7 +828,7 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
 
         if (feature.properties && feature.properties.Country) {
             const isCurrentlySelected = selectedPolygonIndex === featureIndex;
-            layer.bindPopup(`<b>${feature.properties.Country}</b><br/>ISO: ${feature.properties.ISO_A3 || 'N/A'}<br/><br/>Click to ${isCurrentlySelected ? 'deselect' : 'select'} this polygon`);
+            //layer.bindPopup(`<b>${feature.properties.Country}</b><br/>ISO: ${feature.properties.ISO_A3 || 'N/A'}<br/><br/>Click to ${isCurrentlySelected ? 'deselect' : 'select'} this polygon`);
         }
     }, [selectedPolygonIndex]);
 
@@ -674,6 +837,7 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
             <MapContainer className="map-wrap"
                 center={center}
                 zoom={zoom}
+                boxZoom={false}
                 scrollWheelZoom={true}
                 ref={setMap}
                 whenReady={() => {
@@ -685,9 +849,9 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                     noWrap={true}
                 />
-                <DragControl />
+                <MapPanControl interactionMode={interactionMode} />
                 <SelectionBox
-                    isDrawing={isDrawing}
+                    interactionMode={interactionMode}
                     onSelectionComplete={handleSelectionComplete}
                 />
                 {worldEEZData && (
@@ -707,7 +871,7 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                                 key={point.id}
                                 position={point.position}
                                 icon={isSelected ? selectedSquareIcon : squareIcon}
-                                draggable={true}
+                                draggable={interactionMode === 'move'}
                                 eventHandlers={{
                                     dragend: (e) => {
                                         const marker = e.target;
@@ -720,14 +884,10 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                                         // Update GeoJSON data
                                         const updatedGeoJSON = updatePointPositionInGeoJSON(point.id, newLat, newLng);
                                         if (updatedGeoJSON) {
-                                            setWorldEEZData(updatedGeoJSON);
+                                            commitGeoJSONChange(updatedGeoJSON);
 
-                                            // Re-extract polygon points from updated data
-                                            const updatedPoints = extractPolygonPoints(updatedGeoJSON);
-                                            setPolygonPoints(updatedPoints);
-
-                                            // Update selected points if this point is selected
                                             if (setSelectedPoints && isSelected) {
+                                                const updatedPoints = extractPolygonPoints(updatedGeoJSON);
                                                 const selectedPointsList = updatedPoints.filter(p => selectedPointIds.has(p.id));
                                                 setSelectedPoints(selectedPointsList);
                                             }
@@ -753,7 +913,7 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                 {currentMarkers}
             </MapContainer>
         ),
-        [currentMarkers, worldEEZData, polygonPoints, selectedPolygonIndex, selectedPointIds, isDrawing, showDeleteMessage, updatePointPositionInGeoJSON, extractPolygonPoints, setPolygonPoints, setWorldEEZData, setSelectedPoints, geoJsonKey, onEachFeature, styleEEZ],
+        [currentMarkers, worldEEZData, polygonPoints, selectedPolygonIndex, selectedPointIds, interactionMode, showDeleteMessage, updatePointPositionInGeoJSON, extractPolygonPoints, commitGeoJSONChange, setSelectedPoints, geoJsonKey, onEachFeature, styleEEZ],
     )
 
     return (
@@ -762,8 +922,9 @@ export default function Map({ setSelectedTopicGroup, selectedPoints, setSelected
                 map={map}
                 setCurrentMarkers={setCurrentMarkers}
                 setSelectedTopicGroup={setSelectedTopicGroup}
-                isDrawing={isDrawing}
-                setIsDrawing={setIsDrawing}
+                interactionMode={interactionMode}
+                setInteractionMode={setInteractionMode}
+                selectedPolygonIndex={selectedPolygonIndex}
                 selectedPointIds={selectedPointIds}
                 setSelectedPointIds={setSelectedPointIds}
                 setSelectedPoints={setSelectedPoints}

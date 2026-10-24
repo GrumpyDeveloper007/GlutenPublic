@@ -1,11 +1,11 @@
 'use client'
 
 import 'bootstrap/dist/css/bootstrap.css';
-import Map from './map';
 import Sidebar from './sidebar';
 import { TopicGroupClass } from '../_model/model';
-import React, { useState, useCallback, useEffect, useMemo } from "react";
+import React, { useState, useCallback } from "react";
 import dynamic from 'next/dynamic';
+import type { GeoJSONImportRequest } from './map';
 
 const DynamicComponentWithNoSSR = dynamic(
   () => import('./map'),
@@ -16,6 +16,15 @@ export default function Home() {
   const [selectedTopicGroup, setSelectedTopicGroup] = useState<TopicGroupClass>(new TopicGroupClass(999, 999, "test", "test", [], "test", "test", "test", "test"));
   const [selectedPoints, setSelectedPoints] = useState<any[]>([]);
   const [worldEEZData, setWorldEEZData] = useState<any>(null);
+  const [importedGeoJSON, setImportedGeoJSON] = useState<GeoJSONImportRequest | null>(null);
+
+  const handleGeoJSONLoaded = useCallback((data: any) => {
+    setImportedGeoJSON({ data, id: Date.now() });
+  }, []);
+
+  const handleImportedGeoJSONApplied = useCallback(() => {
+    setImportedGeoJSON(null);
+  }, []);
 
   return (
     <div className="grid grid-rows-[20px_1fr_20px] items-center justify-items-center min-h-screen p-8 pb-20 gap-16 sm:p-20 font-[family-name:var(--font-geist-sans)]">
@@ -31,6 +40,8 @@ export default function Home() {
                   selectedPoints={selectedPoints}
                   setSelectedPoints={setSelectedPoints}
                   setWorldEEZData={setWorldEEZData}
+                  importedGeoJSON={importedGeoJSON}
+                  onImportedGeoJSONApplied={handleImportedGeoJSONApplied}
                 />
               </div>
               <div className="detail">
@@ -38,6 +49,7 @@ export default function Home() {
                   selectedTopicGroup={selectedTopicGroup}
                   selectedPoints={selectedPoints}
                   worldEEZData={worldEEZData}
+                  onGeoJSONLoaded={handleGeoJSONLoaded}
                 />
               </div>
             </div>

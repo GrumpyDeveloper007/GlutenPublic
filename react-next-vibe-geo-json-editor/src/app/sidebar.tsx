@@ -1,17 +1,20 @@
 'use client'
 
-import React from 'react';
+import React, { useRef } from 'react';
 import { TopicGroupClass } from '../_model/model';
 
 const Sidebar = ({
     selectedTopicGroup,
     selectedPoints,
-    worldEEZData
+    worldEEZData,
+    onGeoJSONLoaded,
 }: {
     selectedTopicGroup: TopicGroupClass;
     selectedPoints: any[];
     worldEEZData: any;
+    onGeoJSONLoaded: (data: any) => void;
 }) => {
+    const fileInputRef = useRef<HTMLInputElement>(null);
     // Helper function to format a date
     const dateOnly = (date: Date | string): string => {
         if (typeof date === 'string') {
@@ -60,10 +63,61 @@ const Sidebar = ({
         URL.revokeObjectURL(url);
     };
 
+    const openGeoJSONFilePicker = () => {
+        fileInputRef.current?.click();
+    };
+
+    const handleGeoJSONFileChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+        const file = event.target.files?.[0];
+        event.target.value = '';
+        if (!file) {
+            return;
+        }
+
+        const reader = new FileReader();
+        reader.onload = () => {
+            try {
+                const parsed = JSON.parse(reader.result as string);
+                onGeoJSONLoaded(parsed);
+            } catch {
+                alert('Could not parse file. Please choose a valid JSON GeoJSON file.');
+            }
+        };
+        reader.onerror = () => {
+            alert('Could not read the selected file.');
+        };
+        reader.readAsText(file);
+    };
+
     return (
         <div style={{ padding: '20px', height: '100vh', overflowY: 'auto' }}>
             <div style={{ marginBottom: '20px', paddingBottom: '15px', borderBottom: '2px solid #ddd' }}>
                 <h3 style={{ marginTop: 0 }}>GeoJSON Editor</h3>
+                <input
+                    ref={fileInputRef}
+                    type="file"
+                    accept=".json,.geojson,application/geo+json,application/json"
+                    onChange={handleGeoJSONFileChange}
+                    style={{ display: 'none' }}
+                />
+                <button
+                    type="button"
+                    onClick={openGeoJSONFilePicker}
+                    style={{
+                        backgroundColor: '#2196F3',
+                        color: 'white',
+                        border: 'none',
+                        padding: '10px 20px',
+                        borderRadius: '5px',
+                        cursor: 'pointer',
+                        fontSize: '14px',
+                        fontWeight: 'bold',
+                        width: '100%',
+                        marginTop: '10px',
+                    }}
+                >
+                    📂 Load geo.json
+                </button>
                 <button
                     onClick={downloadGeoJSON}
                     disabled={!worldEEZData}
@@ -97,7 +151,7 @@ const Sidebar = ({
 
             {selectedPoints.length === 0 ? (
                 <p style={{ color: '#666', fontStyle: 'italic' }}>
-                    No points selected. Select a polygon and use the selection box to choose points.
+                    No points selected. Choose a polygon, switch to Point selection mode, then box-select vertices.
                 </p>
             ) : (
                 <div>
