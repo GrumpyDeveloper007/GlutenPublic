@@ -17,9 +17,11 @@ export default function Home() {
   const [selectedPoints, setSelectedPoints] = useState<any[]>([]);
   const [worldEEZData, setWorldEEZData] = useState<any>(null);
   const [importedGeoJSON, setImportedGeoJSON] = useState<GeoJSONImportRequest | null>(null);
+  const [originalFileName, setOriginalFileName] = useState<string | null>(null);
 
-  const handleGeoJSONLoaded = useCallback((data: any) => {
+  const handleGeoJSONLoaded = useCallback((data: any, fileName: string) => {
     setImportedGeoJSON({ data, id: Date.now() });
+    setOriginalFileName(fileName);
   }, []);
 
   const handleImportedGeoJSONApplied = useCallback(() => {
@@ -49,6 +51,7 @@ export default function Home() {
                   selectedTopicGroup={selectedTopicGroup}
                   selectedPoints={selectedPoints}
                   worldEEZData={worldEEZData}
+                  originalFileName={originalFileName}
                   onGeoJSONLoaded={handleGeoJSONLoaded}
                 />
               </div>

@@ -1,9 +1,10 @@
 'use client'
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
-import { MapContainer, Marker, Popup, TileLayer, GeoJSON, useMapEvents } from "react-leaflet";
+import { MapContainer, Marker, Popup, TileLayer, GeoJSON, Rectangle, useMapEvents } from "react-leaflet";
 import { LatLngTuple, Icon, LatLngBounds, DomEvent, LeafletMouseEvent } from "leaflet";
 import { Map as LeafletMap } from 'leaflet';
+import { booleanValid, booleanWithin } from "@turf/turf";
 import { mapDataService } from './_services/index';
 import { TopicGroupClass } from "@/_model/model";
 // import worldEEZData from '../staticdata/World-EEZ.geo.json';
@@ -18,17 +19,19 @@ Icon.Default.mergeOptions({
 
 // Create custom small square icon for polygon points
 const createSquareIcon = (color: string = '#ff0000', size: number = 4) => {
+    const hitAreaSize = 16;
+    const squareOffset = (hitAreaSize - size) / 2;
     const svg = `
-        <svg width="${size}" height="${size}" xmlns="http://www.w3.org/2000/svg">
-            <rect width="${size}" height="${size}" fill="${color}" stroke="white" stroke-width="0.5"/>
+        <svg width="${hitAreaSize}" height="${hitAreaSize}" xmlns="http://www.w3.org/2000/svg">
+            <rect x="${squareOffset}" y="${squareOffset}" width="${size}" height="${size}" fill="${color}" stroke="white" stroke-width="0.5"/>
         </svg>
     `;
 
     return new Icon({
         iconUrl: `data:image/svg+xml;base64,${btoa(svg)}`,
-        iconSize: [size, size],
-        iconAnchor: [size / 2, size / 2],
-        popupAnchor: [0, -size / 2],
+        iconSize: [hitAreaSize, hitAreaSize],
+        iconAnchor: [hitAreaSize / 2, hitAreaSize / 2],
+        popupAnchor: [0, -hitAreaSize / 2],
         className: 'custom-square-icon'
     });
 };
@@ -52,7 +55,93 @@ export function prepareGeoJSONForEditor(data: any) {
     };
 }
 
+function simplifyGeometryWithoutReducingCoverage(geometry: any): { geometry: any; removed: number } {
+    if (geometry.type !== 'Polygon' && geometry.type !== 'MultiPolygon') {
+        return { geometry, removed: 0 };
+    }
+
+    const originalGeometry = structuredClone(geometry);
+    const simplifiedGeometry = structuredClone(geometry);
+    const polygons: number[][][][] = geometry.type === 'Polygon'
+        ? [simplifiedGeometry.coordinates]
+        : simplifiedGeometry.coordinates;
+    let removed = 0;
+
+    for (const polygon of polygons) {
+        for (let ringIndex = 0; ringIndex < polygon.length; ringIndex++) {
+            const ring = polygon[ringIndex];
+            let signedArea = 0;
+            for (let pointIndex = 0; pointIndex < ring.length - 1; pointIndex++) {
+                const current = ring[pointIndex];
+                const next = ring[pointIndex + 1];
+                signedArea += current[0] * next[1] - next[0] * current[1];
+            }
+
+            let index = 1;
+            while (ring.length > 4 && index < ring.length - 1) {
+                const previous = ring[index - 1];
+                const current = ring[index];
+                const next = ring[index + 1];
+                const cross = (current[0] - previous[0]) * (next[1] - current[1])
+                    - (current[1] - previous[1]) * (next[0] - current[0]);
+                const isCollinear = cross === 0;
+                const isConvex = cross * signedArea > 0;
+                const canRemove = isCollinear || (ringIndex === 0 ? !isConvex : isConvex);
+
+                if (canRemove) {
+                    ring.splice(index, 1);
+                    removed++;
+                } else {
+                    index++;
+                }
+            }
+        }
+    }
+
+    if (removed === 0 || !booleanValid(simplifiedGeometry) || !booleanWithin(originalGeometry, simplifiedGeometry)) {
+        return { geometry, removed: 0 };
+    }
+    return { geometry: simplifiedGeometry, removed };
+}
+
 export type MapInteractionMode = 'move' | 'select';
+
+function isClosedRing(ring: number[][]): boolean {
+    if (ring.length < 2) {
+        return false;
+    }
+    const first = ring[0];
+    const last = ring[ring.length - 1];
+    return first[0] === last[0] && first[1] === last[1];
+}
+
+function moveRingPoint(ring: number[][], pointIndex: number, position: number[]): number[][] {
+    const updatedRing = ring.map(coordinate => [...coordinate]);
+    if (pointIndex < 0 || pointIndex >= updatedRing.length) {
+        return updatedRing;
+    }
+
+    updatedRing[pointIndex] = position;
+    if (isClosedRing(ring)) {
+        if (pointIndex === 0) {
+            updatedRing[updatedRing.length - 1] = [...position];
+        } else if (pointIndex === ring.length - 1) {
+            updatedRing[0] = [...position];
+        }
+    }
+    return updatedRing;
+}
+
+function removeRingPoints(ring: number[][], indicesToRemove: number[]): number[][] | null {
+    const isClosed = isClosedRing(ring);
+    const openRing = isClosed ? ring.slice(0, -1) : ring;
+    const indices = new Set(indicesToRemove);
+    const remaining = openRing.filter((_, index) => !indices.has(index));
+    if (remaining.length < 3) {
+        return null;
+    }
+    return isClosed ? [...remaining, [...remaining[0]]] : remaining;
+}
 
 function isVertexMarkerTarget(target: EventTarget | null): boolean {
     if (!(target instanceof Element)) {
@@ -66,6 +155,9 @@ function MapPanControl({ interactionMode }: { interactionMode: MapInteractionMod
     const map = useMapEvents({});
     const panningRef = useRef(false);
     const lastPointRef = useRef<{ x: number; y: number } | null>(null);
+    const hasPannedRef = useRef(false);
+    const suppressClickRef = useRef(false);
+    const suppressClickTimeoutRef = useRef<number | null>(null);
     const interactionModeRef = useRef(interactionMode);
     interactionModeRef.current = interactionMode;
 
@@ -79,14 +171,37 @@ function MapPanControl({ interactionMode }: { interactionMode: MapInteractionMod
             const dx = e.clientX - lastPointRef.current.x;
             const dy = e.clientY - lastPointRef.current.y;
             if (dx !== 0 || dy !== 0) {
+                hasPannedRef.current = true;
                 map.panBy([-dx, -dy], { animate: false });
             }
             lastPointRef.current = { x: e.clientX, y: e.clientY };
         };
 
         const endPan = () => {
+            if (panningRef.current && hasPannedRef.current) {
+                suppressClickRef.current = true;
+                suppressClickTimeoutRef.current = window.setTimeout(() => {
+                    suppressClickRef.current = false;
+                    suppressClickTimeoutRef.current = null;
+                }, 0);
+            }
             panningRef.current = false;
+            hasPannedRef.current = false;
             lastPointRef.current = null;
+        };
+
+        const onMapClickCapture = (e: MouseEvent) => {
+            if (!suppressClickRef.current) {
+                return;
+            }
+            suppressClickRef.current = false;
+            if (suppressClickTimeoutRef.current !== null) {
+                window.clearTimeout(suppressClickTimeoutRef.current);
+                suppressClickTimeoutRef.current = null;
+            }
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
         };
 
         const onMouseDown = (e: LeafletMouseEvent) => {
@@ -110,15 +225,22 @@ function MapPanControl({ interactionMode }: { interactionMode: MapInteractionMod
             DomEvent.stopPropagation(e);
         };
 
+        map.getContainer().addEventListener('click', onMapClickCapture, true);
         map.on('mousedown', onMouseDown);
         document.addEventListener('mousemove', onDocumentMouseMove);
         document.addEventListener('mouseup', endPan);
 
         return () => {
+            map.getContainer().removeEventListener('click', onMapClickCapture, true);
             map.off('mousedown', onMouseDown);
             document.removeEventListener('mousemove', onDocumentMouseMove);
             document.removeEventListener('mouseup', endPan);
             endPan();
+            if (suppressClickTimeoutRef.current !== null) {
+                window.clearTimeout(suppressClickTimeoutRef.current);
+                suppressClickTimeoutRef.current = null;
+            }
+            suppressClickRef.current = false;
             map.dragging.disable();
         };
     }, [map]);
@@ -140,6 +262,12 @@ function SelectionBox({
     useMapEvents({
         mousedown: (e) => {
             if (interactionMode !== 'select') {
+                return;
+            }
+            if (e.originalEvent.button !== 0) {
+                return;
+            }
+            if (isVertexMarkerTarget(e.originalEvent.target)) {
                 return;
             }
             const startPoint: LatLngTuple = [e.latlng.lat, e.latlng.lng];
@@ -173,7 +301,23 @@ function SelectionBox({
         }
     });
 
-    return null;
+    if (!currentBox) {
+        return null;
+    }
+
+    return (
+        <Rectangle
+            bounds={new LatLngBounds(currentBox.start, currentBox.end)}
+            pathOptions={{
+                color: '#3388ff',
+                weight: 2,
+                fillColor: '#3388ff',
+                fillOpacity: 0.15,
+                dashArray: '4, 4',
+            }}
+            interactive={false}
+        />
+    );
 }
 
 interface DisplayPositionProps {
@@ -191,14 +335,16 @@ interface DisplayPositionProps {
     setWorldEEZData: React.Dispatch<React.SetStateAction<any>>;
     extractPolygonPoints: (data: any) => any[];
     setPolygonPoints: React.Dispatch<React.SetStateAction<any[]>>;
+    simplifySelectedPolygon: (featureIndex: number) => { removed: number; message: string };
 }
 
-function DisplayPosition({ map, setCurrentMarkers, setSelectedTopicGroup, interactionMode, setInteractionMode, selectedPolygonIndex, selectedPointIds, setSelectedPointIds, setSelectedPoints, showDeleteMessage, removeSelectedPointsFromGeoJSON, setWorldEEZData, extractPolygonPoints, setPolygonPoints }: DisplayPositionProps) {
+function DisplayPosition({ map, setCurrentMarkers, setSelectedTopicGroup, interactionMode, setInteractionMode, selectedPolygonIndex, selectedPointIds, setSelectedPointIds, setSelectedPoints, showDeleteMessage, removeSelectedPointsFromGeoJSON, setWorldEEZData, extractPolygonPoints, setPolygonPoints, simplifySelectedPolygon }: DisplayPositionProps) {
     const [position, setPosition] = useState(() => map.getCenter())
     const [pinCount, setPinCount] = useState(0)
     const [loading, setLoading] = useState(true)
     const [showPins, setShowPins] = useState(false)
     const [countriesInView, setcountriesInView] = useState<string[]>([]);
+    const [simplifyMessage, setSimplifyMessage] = useState('');
 
 
     const onMove = useCallback(() => {
@@ -292,17 +438,44 @@ function DisplayPosition({ map, setCurrentMarkers, setSelectedTopicGroup, intera
                 >
                     Clear Selection ({selectedPointIds.size})
                 </button>
+                <button
+                    type="button"
+                    disabled={selectedPolygonIndex === null}
+                    onClick={() => {
+                        if (selectedPolygonIndex === null) {
+                            return;
+                        }
+                        const result = simplifySelectedPolygon(selectedPolygonIndex);
+                        setSimplifyMessage(result.message);
+                    }}
+                    style={{
+                        background: selectedPolygonIndex === null ? '#e0e0e0' : '#1976d2',
+                        color: selectedPolygonIndex === null ? '#777' : 'white',
+                        border: 'none',
+                        padding: '5px 10px',
+                        margin: '5px',
+                        borderRadius: '3px',
+                        cursor: selectedPolygonIndex === null ? 'not-allowed' : 'pointer',
+                    }}
+                >
+                    Simplify Polygon
+                </button>
             </div>
+            {simplifyMessage && (
+                <p role="status" style={{ color: '#333', fontSize: '12px', margin: '5px 0' }}>
+                    {simplifyMessage}
+                </p>
+            )}
             {interactionMode === 'move' && (
                 <p style={{ color: '#1976d2', fontSize: '12px', margin: '5px 0' }}>
-                    Drag anywhere to pan. Click a polygon to choose it for editing.
+                    Drag the map to pan or drag a vertex to move it. Click a polygon to choose it for editing.
                 </p>
             )}
             {interactionMode === 'select' && (
                 <p style={{ color: '#c62828', fontSize: '12px', margin: '5px 0' }}>
                     {selectedPolygonIndex === null
                         ? 'Select a polygon first, then drag a box over its points.'
-                        : 'Drag a box to select points on the active polygon, then press Delete.'}
+                        : 'Drag a box to select points or drag an individual vertex to move it. Press Delete to remove selected points.'}
                 </p>
             )}
             {showDeleteMessage && (
@@ -349,6 +522,7 @@ export default function Map({
     const [selectedPolygonIndex, setSelectedPolygonIndex] = useState<number | null>(null);
     const [selectedPointIds, setSelectedPointIds] = useState<Set<string>>(new Set());
     const [interactionMode, setInteractionMode] = useState<MapInteractionMode>('move');
+    const interactionModeRef = useRef(interactionMode);
     const [showDeleteMessage, setShowDeleteMessage] = useState(false);
     const [geoJsonKey, setGeoJsonKey] = useState(0);
     const undoStackRef = useRef<any[]>([]);
@@ -357,6 +531,7 @@ export default function Map({
     const MAX_UNDO_HISTORY = 50;
 
     worldEEZDataRef.current = worldEEZData;
+    interactionModeRef.current = interactionMode;
 
     // Sync worldEEZData to parent component when it changes
     useEffect(() => {
@@ -410,32 +585,25 @@ export default function Map({
 
                 if (index === featureIndex && feature.geometry) {
                     if (feature.geometry.type === 'Polygon') {
-                        const coordinates = [...feature.geometry.coordinates[0]];
-
-                        // Update the specific point
-                        // GeoJSON coordinates are [lng, lat] but we're working with [lat, lng]
-                        if (pointIndex >= 0 && pointIndex < coordinates.length && polygonIndex === 0) {
-                            coordinates[pointIndex] = [newLng, newLat];
-                        }
+                        const coordinates = feature.geometry.coordinates.map((ring: number[][], ringIndex: number) =>
+                            ringIndex === 0 && polygonIndex === 0
+                                ? moveRingPoint(ring, pointIndex, [newLng, newLat])
+                                : ring
+                        );
 
                         return {
                             ...updatedFeature,
                             geometry: {
                                 ...feature.geometry,
-                                coordinates: [coordinates]
+                                coordinates
                             }
                         };
                     } else if (feature.geometry.type === 'MultiPolygon') {
-                        // MultiPolygon: update point in the specific polygon
                         const polygons = feature.geometry.coordinates.map((polygon: number[][][], idx: number) => {
                             if (idx === polygonIndex) {
                                 const rings = polygon.map((ring: number[][], ringIdx: number) => {
-                                    if (ringIdx === 0) { // Update outer ring
-                                        const newRing = [...ring];
-                                        if (pointIndex >= 0 && pointIndex < newRing.length) {
-                                            newRing[pointIndex] = [newLng, newLat];
-                                        }
-                                        return newRing;
+                                    if (ringIdx === 0) {
+                                        return moveRingPoint(ring, pointIndex, [newLng, newLat]);
                                     }
                                     return ring;
                                 });
@@ -487,21 +655,13 @@ export default function Map({
                                 .sort((a, b) => b - a); // Sort in descending order for safe removal
 
                             if (indicesToRemove.length > 0) {
-                                // Remove points from coordinates (outer ring only)
-                                const newCoordinates = [...feature.geometry.coordinates[0]];
-                                indicesToRemove.forEach(index => {
-                                    if (index >= 0 && index < newCoordinates.length) {
-                                        newCoordinates.splice(index, 1);
-                                    }
-                                });
-
-                                // Ensure polygon has at least 3 points (minimum for a valid polygon)
-                                if (newCoordinates.length >= 3) {
+                                const newOuterRing = removeRingPoints(feature.geometry.coordinates[0], indicesToRemove);
+                                if (newOuterRing) {
                                     return {
                                         ...feature,
                                         geometry: {
                                             ...feature.geometry,
-                                            coordinates: [newCoordinates]
+                                            coordinates: [newOuterRing, ...feature.geometry.coordinates.slice(1)]
                                         }
                                     };
                                 }
@@ -525,18 +685,9 @@ export default function Map({
                             const newPolygons = feature.geometry.coordinates.map((polygon: number[][][], polygonIndex: number) => {
                                 const indicesToRemove = pointsByPolygon[polygonIndex];
                                 if (indicesToRemove && indicesToRemove.length > 0) {
-                                    const sortedIndices = [...indicesToRemove].sort((a, b) => b - a);
-                                    const outerRing = [...polygon[0]]; // Get outer ring
-
-                                    sortedIndices.forEach(index => {
-                                        if (index >= 0 && index < outerRing.length) {
-                                            outerRing.splice(index, 1);
-                                        }
-                                    });
-
-                                    // Ensure polygon has at least 3 points
-                                    if (outerRing.length >= 3) {
-                                        return [outerRing, ...polygon.slice(1)]; // Keep outer ring and all holes
+                                    const outerRing = removeRingPoints(polygon[0], indicesToRemove);
+                                    if (outerRing) {
+                                        return [outerRing, ...polygon.slice(1)];
                                     }
                                     // If less than 3 points, return null to filter out this polygon
                                     return null;
@@ -614,7 +765,8 @@ export default function Map({
                 if (feature.geometry) {
                     if (feature.geometry.type === 'Polygon') {
                         const coordinates = feature.geometry.coordinates[0]; // Get outer ring
-                        coordinates.forEach((coord: number[], pointIndex: number) => {
+                        const vertexCount = isClosedRing(coordinates) ? coordinates.length - 1 : coordinates.length;
+                        coordinates.slice(0, vertexCount).forEach((coord: number[], pointIndex: number) => {
                             points.push({
                                 id: `${featureIndex}-0-${pointIndex}`, // polygonIndex is 0 for regular polygons
                                 position: [coord[1], coord[0]] as LatLngTuple, // [lat, lng]
@@ -629,7 +781,8 @@ export default function Map({
                         // MultiPolygon: coordinates is array of polygons, each polygon has rings
                         feature.geometry.coordinates.forEach((polygon: number[][][], polygonIndex: number) => {
                             const outerRing = polygon[0]; // First ring is outer ring
-                            outerRing.forEach((coord: number[], pointIndex: number) => {
+                            const vertexCount = isClosedRing(outerRing) ? outerRing.length - 1 : outerRing.length;
+                            outerRing.slice(0, vertexCount).forEach((coord: number[], pointIndex: number) => {
                                 points.push({
                                     id: `${featureIndex}-${polygonIndex}-${pointIndex}`,
                                     position: [coord[1], coord[0]] as LatLngTuple, // [lat, lng]
@@ -666,6 +819,41 @@ export default function Map({
         }
         applyGeoJSONState(newData);
     }, [applyGeoJSONState]);
+
+    const simplifySelectedPolygon = useCallback((featureIndex: number) => {
+        const feature = worldEEZData?.features?.[featureIndex];
+        if (!feature?.geometry || (feature.geometry.type !== 'Polygon' && feature.geometry.type !== 'MultiPolygon')) {
+            return { removed: 0, message: 'The selected feature is not a polygon.' };
+        }
+
+        if (!booleanValid(feature.geometry)) {
+            return { removed: 0, message: 'The selected polygon is invalid and cannot be simplified safely.' };
+        }
+
+        const result = simplifyGeometryWithoutReducingCoverage(feature.geometry);
+        if (result.removed === 0) {
+            return { removed: 0, message: 'No vertices can be safely removed without reducing coverage.' };
+        }
+
+        const updatedData = {
+            ...worldEEZData,
+            features: worldEEZData.features.map((currentFeature: any, index: number) =>
+                index === featureIndex
+                    ? { ...currentFeature, geometry: result.geometry }
+                    : currentFeature
+            ),
+        };
+        commitGeoJSONChange(updatedData);
+        setSelectedPointIds(new Set());
+        if (setSelectedPoints) {
+            setSelectedPoints([]);
+        }
+
+        return {
+            removed: result.removed,
+            message: `Removed ${result.removed} ${result.removed === 1 ? 'point' : 'points'} without reducing coverage.`,
+        };
+    }, [worldEEZData, commitGeoJSONChange, setSelectedPointIds, setSelectedPoints]);
 
     const undoGeoJSONChange = useCallback(() => {
         if (undoStackRef.current.length === 0) return;
@@ -814,6 +1002,9 @@ export default function Map({
 
         // Add click handler for polygon selection
         layer.on('click', (e: any) => {
+            if (interactionModeRef.current === 'select') {
+                return;
+            }
             console.log('Polygon clicked:', featureIndex, feature.properties?.Country);
             setSelectedPolygonIndex((currentSelected: number | null) => {
                 if (currentSelected === featureIndex) {
@@ -871,7 +1062,7 @@ export default function Map({
                                 key={point.id}
                                 position={point.position}
                                 icon={isSelected ? selectedSquareIcon : squareIcon}
-                                draggable={interactionMode === 'move'}
+                                draggable
                                 eventHandlers={{
                                     dragend: (e) => {
                                         const marker = e.target;
@@ -933,6 +1124,7 @@ export default function Map({
                 setWorldEEZData={setWorldEEZData}
                 extractPolygonPoints={extractPolygonPoints}
                 setPolygonPoints={setPolygonPoints}
+                simplifySelectedPolygon={simplifySelectedPolygon}
             /> : null}
             {displayMap}
         </div>

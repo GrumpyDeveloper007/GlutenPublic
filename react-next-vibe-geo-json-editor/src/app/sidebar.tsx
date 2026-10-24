@@ -7,12 +7,14 @@ const Sidebar = ({
     selectedTopicGroup,
     selectedPoints,
     worldEEZData,
+    originalFileName,
     onGeoJSONLoaded,
 }: {
     selectedTopicGroup: TopicGroupClass;
     selectedPoints: any[];
     worldEEZData: any;
-    onGeoJSONLoaded: (data: any) => void;
+    originalFileName: string | null;
+    onGeoJSONLoaded: (data: any, fileName: string) => void;
 }) => {
     const fileInputRef = useRef<HTMLInputElement>(null);
     // Helper function to format a date
@@ -42,8 +44,7 @@ const Sidebar = ({
             })
         };
 
-        // Create a JSON string with proper formatting
-        const jsonString = JSON.stringify(cleanedData, null, 2);
+        const jsonString = JSON.stringify(cleanedData);
 
         // Create a blob with the JSON data
         const blob = new Blob([jsonString], { type: 'application/json' });
@@ -52,7 +53,7 @@ const Sidebar = ({
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = 'World-EEZ.geo.json';
+        link.download = originalFileName || 'World-EEZ.geo.json';
 
         // Trigger download
         document.body.appendChild(link);
@@ -78,7 +79,7 @@ const Sidebar = ({
         reader.onload = () => {
             try {
                 const parsed = JSON.parse(reader.result as string);
-                onGeoJSONLoaded(parsed);
+                onGeoJSONLoaded(parsed, file.name);
             } catch {
                 alert('Could not parse file. Please choose a valid JSON GeoJSON file.');
             }
