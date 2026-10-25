@@ -61,10 +61,15 @@ function readGeometry(image) {
 
   const center = bounds.min.map((min, axis) => (min + bounds.max[axis]) / 2)
   const positions = new Float32Array(vertexCount * 3)
+  const uvs = new Float32Array(vertexCount * 2)
+  const xRange = bounds.max[0] - bounds.min[0] || 1
+  const yRange = bounds.max[1] - bounds.min[1] || 1
   for (let i = 0; i < vertexCount; i += 1) {
     positions[i * 3] = vertices[i * 3] - center[0]
     positions[i * 3 + 1] = vertices[i * 3 + 2] - center[2]
     positions[i * 3 + 2] = vertices[i * 3 + 1] - center[1]
+    uvs[i * 2] = (vertices[i * 3] - bounds.min[0]) / xRange
+    uvs[i * 2 + 1] = (vertices[i * 3 + 1] - bounds.min[1]) / yRange
   }
 
   const faces = new Uint32Array(faceCount * 3)
@@ -87,6 +92,7 @@ function readGeometry(image) {
 
   const geometry = new BufferGeometry()
   geometry.setAttribute('position', new BufferAttribute(positions, 3))
+  geometry.setAttribute('uv', new BufferAttribute(uvs, 2))
   geometry.setIndex(new BufferAttribute(faces, 1))
   geometry.computeVertexNormals()
 

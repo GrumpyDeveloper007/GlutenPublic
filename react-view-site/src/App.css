@@ -7,6 +7,54 @@ button {
   font: inherit;
 }
 
+.studio button[data-tooltip] {
+  position: relative;
+}
+
+.studio button[data-tooltip]::after {
+  position: absolute;
+  z-index: 100;
+  top: calc(100% + 8px);
+  left: 50%;
+  width: max-content;
+  max-width: 220px;
+  padding: 6px 8px;
+  border: 1px solid #42453a;
+  border-radius: 5px;
+  background: #20221c;
+  box-shadow: 0 5px 14px #0008;
+  color: #e4e6dc;
+  content: attr(data-tooltip);
+  font-size: 10px;
+  font-weight: 450;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  opacity: 0;
+  pointer-events: none;
+  visibility: hidden;
+  transform: translate(-50%, -3px);
+  transition: opacity 120ms ease, transform 120ms ease, visibility 120ms;
+}
+
+.studio button[data-tooltip-position="top"]::after {
+  top: auto;
+  bottom: calc(100% + 8px);
+  transform: translate(-50%, 3px);
+}
+
+.studio button[data-tooltip]:hover,
+.studio button[data-tooltip]:focus-visible {
+  z-index: 30;
+}
+
+.studio button[data-tooltip]:hover::after,
+.studio button[data-tooltip]:focus-visible::after {
+  opacity: 1;
+  visibility: visible;
+  transform: translate(-50%, 0);
+}
+
 .studio {
   min-height: 100svh;
   background: #10110f;
@@ -245,6 +293,14 @@ button {
   font-size: 9px;
 }
 
+.polygon-row {
+  cursor: pointer;
+}
+
+.polygon-row small {
+  margin-left: auto;
+}
+
 .model-row-name {
   overflow: hidden;
   text-overflow: ellipsis;
@@ -293,6 +349,12 @@ button {
   transform: perspective(20px) rotateX(47deg);
 }
 
+.polygon-icon {
+  border: 1px solid #4d8dff;
+  background: #4d8dff33;
+  clip-path: polygon(10% 20%, 75% 5%, 95% 70%, 55% 95%, 5% 75%);
+}
+
 .row-dot {
   width: 5px;
   height: 5px;
@@ -323,6 +385,53 @@ button {
   padding: 11px 8px 15px;
 }
 
+.texture-actions {
+  display: flex;
+  gap: 6px;
+  padding: 0 8px;
+}
+
+.texture-button,
+.texture-clear-button {
+  min-height: 29px;
+  border: 1px solid #3c3f34;
+  border-radius: 5px;
+  background: #20221c;
+  color: #d6d8ce;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.texture-button {
+  flex: 1;
+  color: #d0ff71;
+}
+
+.texture-button:hover,
+.texture-clear-button:hover {
+  border-color: #74884a;
+  background: #282b21;
+}
+
+.texture-button:disabled {
+  cursor: wait;
+  opacity: 0.65;
+}
+
+.texture-clear-button {
+  padding: 0 9px;
+  color: #a5a69d;
+}
+
+.texture-info {
+  overflow: hidden;
+  padding: 8px 8px 0;
+  color: #85877d;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .color-swatch {
   width: 24px;
   height: 24px;
@@ -334,6 +443,37 @@ button {
 .model-swatch {
   background:
     radial-gradient(circle at 35% 30%, #e6ffb7, #a6d85b 60%, #465632);
+}
+
+.polygon-swatch {
+  background: linear-gradient(135deg, #79aaff, #3167b9);
+  box-shadow: 0 0 14px #4d8dff55;
+}
+
+.polygon-point-list {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  max-height: 180px;
+  overflow: auto;
+  margin: 0;
+  padding: 0 8px;
+  list-style: none;
+}
+
+.polygon-point-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  color: #818379;
+  font-size: 9px;
+}
+
+.polygon-point-list code {
+  color: #b9c8df;
+  font-family: var(--mono);
+  font-size: 8px;
+  white-space: nowrap;
 }
 
 .selected-object div {
@@ -497,6 +637,22 @@ kbd {
   touch-action: none;
 }
 
+.canvas-wrap:not(.draw-mode-active) canvas {
+  cursor: grab;
+}
+
+.canvas-wrap:not(.draw-mode-active) canvas:active {
+  cursor: grabbing;
+}
+
+.canvas-wrap.left-dragging canvas {
+  cursor: grabbing;
+}
+
+.canvas-wrap.draw-mode-active canvas {
+  cursor: crosshair;
+}
+
 .viewport-overlay {
   position: absolute;
   inset: 0;
@@ -630,14 +786,15 @@ kbd {
 }
 
 .axis-y {
-  top: 0;
-  left: 19px;
+  bottom: 8px;
+  left: 2px;
   color: #d0ff71;
 }
 
 .axis-y::before {
-  top: 9px;
-  left: 2px;
+  top: -5px;
+  left: 6px;
+  transform: rotate(-65deg);
 }
 
 .axis-x {
@@ -653,15 +810,14 @@ kbd {
 }
 
 .axis-z {
-  bottom: 8px;
-  left: 2px;
+  top: 0;
+  left: 19px;
   color: #91afff;
 }
 
 .axis-z::before {
-  top: -5px;
-  left: 6px;
-  transform: rotate(-65deg);
+  top: 9px;
+  left: 2px;
 }
 
 .axis-center {
@@ -704,6 +860,22 @@ kbd {
 .viewport-controls button.control-active {
   background: #292c22;
   color: #d0ff71;
+}
+
+.viewport-controls .draw-mode-button {
+  width: auto;
+  gap: 7px;
+  padding: 0 9px;
+  color: #b9bbb0;
+  font-size: 10px;
+}
+
+.viewport-controls .swap-mouse-button {
+  width: 29px;
+}
+
+.draw-mode-button span {
+  white-space: nowrap;
 }
 
 .viewport-controls svg,
