@@ -386,7 +386,7 @@ function App() {
   return (
     <main className="studio">
       <header className="topbar">
-        <a className="brand" href="/" aria-label="Forma home">
+        <a className="brand" href={import.meta.env.BASE_URL} aria-label="Forma home">
           <span className="brand-mark"><span /><span /><span /></span>
           <span>forma</span>
           <span className="brand-divider" />

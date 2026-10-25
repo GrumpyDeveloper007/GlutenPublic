@@ -26,7 +26,9 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-cache: "npm" # Can change to "yarn" or "pnpm" if needed
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ./react-view-site/package-lock.json
 
       - name: Install dependencies
         working-directory: ./react-view-site
@@ -48,5 +50,4 @@ jobs:
       - name: Deploy to GitHub Pages
         id: deployment
         uses: actions/deploy-pages@v4
-
 
