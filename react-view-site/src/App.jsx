@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { Bounds, Line as DreiLine, OrbitControls } from '@react-three/drei'
-import { Box3, BufferAttribute, BufferGeometry, CanvasTexture, CatmullRomCurve3, Color, DoubleSide, EllipseCurve, Group, Line, LineBasicMaterial, Mesh, MeshStandardMaterial, MOUSE, Raycaster, Shape, ShapeGeometry, SRGBColorSpace, Vector3 } from 'three'
+import { Box3, BufferAttribute, BufferGeometry, CanvasTexture, CatmullRomCurve3, Color, DoubleSide, EllipseCurve, FrontSide, Group, Line, LineBasicMaterial, Mesh, MeshBasicMaterial, MeshStandardMaterial, MOUSE, Raycaster, Shape, ShapeGeometry, SRGBColorSpace, Vector3 } from 'three'
 import { TessellateModifier } from 'three/addons/modifiers/TessellateModifier.js'
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'
@@ -441,37 +441,94 @@ function getDrawingHeight(model) {
   return model.bounds.max.y + Math.max(size.length() * 0.005, 0.02)
 }
 
-function addPlanarUvs(geometry) {
-  if (geometry.getAttribute('uv')) return
+function createTopSurfaceGeometry(mesh) {
+  const source = mesh.geometry
+  const positions = source.getAttribute('position')
+  if (!positions) return null
 
-  geometry.computeBoundingBox()
-  const bounds = geometry.boundingBox
-  const dimensions = [
-    bounds.max.x - bounds.min.x,
-    bounds.max.y - bounds.min.y,
-    bounds.max.z - bounds.min.z,
-  ]
-  const axes = [0, 1, 2].sort((a, b) => dimensions[b] - dimensions[a]).slice(0, 2)
-  const min = [bounds.min.x, bounds.min.y, bounds.min.z]
-  const ranges = axes.map((axis) => dimensions[axis] || 1)
-  const positions = geometry.getAttribute('position')
-  const uvs = new Float32Array(positions.count * 2)
-  for (let i = 0; i < positions.count; i += 1) {
-    uvs[i * 2] = (positions.getComponent(i, axes[0]) - min[axes[0]]) / ranges[0]
-    uvs[i * 2 + 1] = (positions.getComponent(i, axes[1]) - min[axes[1]]) / ranges[1]
+  mesh.updateWorldMatrix(true, false)
+  const elementCount = source.index?.count ?? positions.count
+  const drawStart = source.drawRange.start
+  const drawEnd = Number.isFinite(source.drawRange.count)
+    ? Math.min(drawStart + source.drawRange.count, elementCount)
+    : elementCount
+  const sourceGroups = source.groups.length > 0
+    ? source.groups
+    : [{ start: 0, count: elementCount, materialIndex: 0 }]
+  const selectedGroups = []
+  const first = new Vector3()
+  const second = new Vector3()
+  const third = new Vector3()
+  const normal = new Vector3()
+
+  sourceGroups.forEach(({ start, count }) => {
+    const indices = []
+    const groupStart = Math.max(start, drawStart)
+    const groupEnd = Math.min(start + count, drawEnd)
+    for (let offset = groupStart; offset + 2 < groupEnd; offset += 3) {
+      const a = source.index ? source.index.getX(offset) : offset
+      const b = source.index ? source.index.getX(offset + 1) : offset + 1
+      const c = source.index ? source.index.getX(offset + 2) : offset + 2
+      first.fromBufferAttribute(positions, a).applyMatrix4(mesh.matrixWorld)
+      second.fromBufferAttribute(positions, b).applyMatrix4(mesh.matrixWorld)
+      third.fromBufferAttribute(positions, c).applyMatrix4(mesh.matrixWorld)
+      normal.subVectors(second, first).cross(third.clone().sub(first)).normalize()
+      if (Math.abs(normal.y) < 0.01) continue
+      if (normal.y > 0) indices.push(a, b, c)
+      else indices.push(a, c, b)
+    }
+    if (indices.length > 0) selectedGroups.push({ indices })
+  })
+
+  if (selectedGroups.length === 0) return null
+
+  const geometry = source.clone()
+  geometry.clearGroups()
+  const combinedIndices = []
+  selectedGroups.forEach(({ indices }) => {
+    indices.forEach((index) => combinedIndices.push(index))
+  })
+  geometry.setIndex(combinedIndices)
+  geometry.setDrawRange(0, combinedIndices.length)
+
+  let minX = Infinity
+  let minZ = Infinity
+  let maxX = -Infinity
+  let maxZ = -Infinity
+  const worldPosition = new Vector3()
+  selectedGroups.forEach(({ indices }) => {
+    indices.forEach((index) => {
+      worldPosition.fromBufferAttribute(positions, index).applyMatrix4(mesh.matrixWorld)
+      minX = Math.min(minX, worldPosition.x)
+      minZ = Math.min(minZ, worldPosition.z)
+      maxX = Math.max(maxX, worldPosition.x)
+      maxZ = Math.max(maxZ, worldPosition.z)
+    })
+  })
+  if (!source.getAttribute('uv')) {
+    const uvs = new Float32Array(positions.count * 2)
+    const width = maxX - minX || 1
+    const depth = maxZ - minZ || 1
+    for (let index = 0; index < positions.count; index += 1) {
+      worldPosition.fromBufferAttribute(positions, index).applyMatrix4(mesh.matrixWorld)
+      uvs[index * 2] = (worldPosition.x - minX) / width
+      uvs[index * 2 + 1] = (worldPosition.z - minZ) / depth
+    }
+    geometry.setAttribute('uv', new BufferAttribute(uvs, 2))
   }
-  geometry.setAttribute('uv', new BufferAttribute(uvs, 2))
+  return geometry
 }
 
 function clearModelTexture(model) {
   if (!model?.texture) return
 
-  model.textureOriginalMaterials.forEach(({ map, color }, material) => {
-    material.map = map
-    if (color && material.color) material.color.copy(color)
-    material.needsUpdate = true
+  model.textureOverlayMeshes?.forEach((overlay) => {
+    overlay.removeFromParent()
+    overlay.geometry.dispose()
+    const materials = Array.isArray(overlay.material) ? overlay.material : [overlay.material]
+    materials.forEach((material) => material.dispose())
   })
-  model.textureOriginalMaterials.clear()
+  model.textureOverlayMeshes = []
   model.texture.image.close?.()
   model.texture.dispose()
   model.texture = null
@@ -479,26 +536,27 @@ function clearModelTexture(model) {
 
 function applyTextureToModel(model, texture) {
   clearModelTexture(model)
-  const originalMaterials = new Map()
+  const overlayMeshes = []
   let texturedMeshes = 0
 
   model.object.traverse((child) => {
-    if (!child.isMesh) return
-    addPlanarUvs(child.geometry)
-    const materials = Array.isArray(child.material) ? child.material : [child.material]
-    materials.forEach((material) => {
-      if (!material.map && !material.color) return
-      if (!originalMaterials.has(material)) {
-        originalMaterials.set(material, {
-          map: material.map,
-          color: material.color?.clone(),
-        })
-      }
-      material.map = texture
-      material.color?.set('#ffffff')
-      material.needsUpdate = true
-      texturedMeshes += 1
+    if (!child.isMesh || child.userData.isTextureOverlay) return
+    const topSurfaceGeometry = createTopSurfaceGeometry(child)
+    if (!topSurfaceGeometry) return
+    const material = new MeshBasicMaterial({
+      map: texture,
+      side: FrontSide,
+      depthWrite: false,
+      polygonOffset: true,
+      polygonOffsetFactor: -2,
+      polygonOffsetUnits: -2,
     })
+    const overlay = new Mesh(topSurfaceGeometry, material)
+    overlay.userData.isTextureOverlay = true
+    overlay.renderOrder = 1
+    child.add(overlay)
+    overlayMeshes.push(overlay)
+    texturedMeshes += 1
   })
 
   if (texturedMeshes === 0) {
@@ -507,7 +565,7 @@ function applyTextureToModel(model, texture) {
     throw new Error('This model has no mesh surfaces to texture.')
   }
 
-  model.textureOriginalMaterials = originalMaterials
+  model.textureOverlayMeshes = overlayMeshes
   model.texture = texture
   return texturedMeshes
 }
@@ -654,6 +712,7 @@ const MemoizedPolygonArea = memo(PolygonArea)
 
 function Scene({
   model,
+  reliefFactor,
   setSelected,
   setSelectedPolygonId,
   showGrid,
@@ -671,7 +730,7 @@ function Scene({
   onDrawPointerMove,
   onSelectPolygon,
 }) {
-  const drawingHeight = useMemo(() => getDrawingHeight(model), [model])
+  const drawingHeight = getDrawingHeight(model)
   const draftLine = [...draftPoints, ...(draftCursor ? [draftCursor] : [])]
     .map((point) => new Vector3(point.x, point.y + 0.01, point.z))
 
@@ -697,7 +756,7 @@ function Scene({
       )}
       {polygons.map((polygon) => (
         <MemoizedPolygonArea
-          key={polygon.id}
+          key={`${polygon.id}-${reliefFactor}`}
           polygon={polygon}
           model={model}
           selected={polygon.id === selectedPolygonId}
@@ -760,6 +819,7 @@ function Scene({
 
 function App() {
   const [model, setModel] = useState(null)
+  const [reliefFactor, setReliefFactor] = useState(1)
   const [textureInfo, setTextureInfo] = useState(null)
   const [selected, setSelected] = useState(false)
   const [showGrid, setShowGrid] = useState(true)
@@ -779,6 +839,7 @@ function App() {
   const [fileStatus, setFileStatus] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const controlsRef = useRef()
+  const modelRef = useRef(null)
   const fileInputRef = useRef()
   const textureInputRef = useRef()
   const drawingRaycasterRef = useRef(new Raycaster())
@@ -924,6 +985,18 @@ function App() {
   const openFilePicker = () => fileInputRef.current?.click()
   const openTexturePicker = () => textureInputRef.current?.click()
 
+  const toggleRelief = () => {
+    const activeModel = modelRef.current
+    if (activeModel?.extension !== '00t') return
+    const nextFactor = reliefFactor === 1 ? 2 : 1
+    activeModel.object.scale.y = activeModel.baseScaleY * nextFactor
+    activeModel.object.position.y = activeModel.basePositionY * nextFactor
+    activeModel.object.updateWorldMatrix(true, true)
+    activeModel.bounds.setFromObject(activeModel.object)
+    setReliefFactor(nextFactor)
+    setFileStatus(nextFactor === 1 ? 'Restored original terrain height.' : 'Terrain Z height amplified 2×.')
+  }
+
   const persistFile = async (key, file) => {
     try {
       await saveStoredFile(key, file)
@@ -977,6 +1050,8 @@ function App() {
       const nextModel = {
         object: preparedObject,
         bounds: new Box3().setFromObject(preparedObject),
+        baseScaleY: preparedObject.scale.y,
+        basePositionY: preparedObject.position.y,
         name: file.name,
         extension,
         renderedEntities,
@@ -985,7 +1060,9 @@ function App() {
         faceCount,
       }
       setTextureInfo(null)
+      setReliefFactor(1)
       if (shouldPersist) setFitModel(true)
+      modelRef.current = nextModel
       setModel(nextModel)
       setSelected(true)
       const storageWarning = shouldPersist ? await persistFile('model', file) : ''
@@ -1482,6 +1559,19 @@ function App() {
                   <div><strong>{model.name}</strong><span>{model.extension.toUpperCase()} model</span></div>
                   <span className="selection-indicator" />
                 </div>
+                {model.extension === '00t' && (
+                  <div className="texture-actions relief-actions">
+                    <button
+                      className={`texture-button ${reliefFactor > 1 ? 'control-active' : ''}`}
+                      type="button"
+                      onClick={toggleRelief}
+                      aria-pressed={reliefFactor > 1}
+                      data-tooltip="Exaggerate or restore the terrain's vertical relief"
+                    >
+                      {reliefFactor > 1 ? 'Reset Z height' : 'Amplify Z height'}
+                    </button>
+                  </div>
+                )}
                 <div className="texture-actions">
                   <button
                     className="texture-button"
@@ -1564,6 +1654,7 @@ function App() {
             >
               <Scene
                 model={model}
+                reliefFactor={reliefFactor}
                 setSelected={setSelected}
                 setSelectedPolygonId={setSelectedPolygonId}
                 showGrid={showGrid}
