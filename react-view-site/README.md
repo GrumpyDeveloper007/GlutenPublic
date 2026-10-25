@@ -14,8 +14,10 @@ Supported formats:
 
 Orbit the camera by dragging, use the cursor keys to move along X and Y, and use
 **Page Up**/**Page Down** to move along Z. Press **Home** to reset to the home
-position. Zoom with the scroll wheel, and use the viewer controls to reset the
-camera or toggle the grid. Select **Draw area** to enter polygon mode, left-click
+position. Use the buggy toggle to switch to low, first-person terrain driving:
+hold the cursor keys to accelerate, reverse, and steer smoothly; toggling buggy
+mode off restores the previous view. Zoom with the scroll wheel, and use the viewer controls to
+reset the camera or toggle the grid. Select **Draw area** to enter polygon mode, left-click
 to add vertices, and right-click to complete an area. Completed blue areas appear
 slightly above the loaded terrain surface and in the scene list; right-click also
 exits polygon mode. Toggle polygon mode off or press **Escape** to cancel an

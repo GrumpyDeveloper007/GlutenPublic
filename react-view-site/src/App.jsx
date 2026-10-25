@@ -12,6 +12,7 @@ import { splitPolygonByLine } from './polygonCut.js'
 import './App.css'
 
 const supportedExtensions = ['glb', 'obj', 'stl', 'dxf', '00t']
+const defaultCameraTarget = [0, 0.15, 0]
 const workspaceDatabaseName = 'forma-workspace'
 const workspaceStoreName = 'assets'
 const legacyStorageKey = 'forma-workspace-assets'
@@ -598,6 +599,7 @@ function Icon({ name }) {
     polygon: <><path d="m5 5 12-1 3 10-8 6-9-5 2-10Z" /><circle cx="5" cy="5" r="1" /><circle cx="17" cy="4" r="1" /><circle cx="20" cy="14" r="1" /><circle cx="12" cy="20" r="1" /><circle cx="3" cy="15" r="1" /></>,
     cut: <><path d="m4 20 16-16" /><circle cx="5" cy="19" r="2" /><circle cx="19" cy="5" r="2" /><path d="m8 16 3 3m2-7 3 3" /></>,
     swap: <><path d="M4 8h15l-3-3" /><path d="m19 8-3 3M20 16H5l3 3" /><path d="m5 16 3-3" /></>,
+    buggy: <><path d="m5 15 1.2-4.2A2.5 2.5 0 0 1 8.6 9h6.8a2.5 2.5 0 0 1 2.4 1.8L19 15" /><path d="M4 15h16v3H4z" /><path d="m8 9 1-3h6l1 3" /><circle cx="7" cy="18" r="1.5" /><circle cx="17" cy="18" r="1.5" /></>,
   }
 
   return (
@@ -726,6 +728,7 @@ function Scene({
   cutMode,
   onCameraChange,
   fitModel,
+  buggyMode,
   onDrawPointerDown,
   onDrawPointerMove,
   onSelectPolygon,
@@ -804,13 +807,13 @@ function Scene({
         minDistance={0.5}
         maxDistance={10000}
         maxPolarAngle={Math.PI / 1.8}
-        target={[0, 0.15, 0]}
+        target={defaultCameraTarget}
         mouseButtons={{
           LEFT: swapMouseButtons ? MOUSE.PAN : MOUSE.ROTATE,
           MIDDLE: MOUSE.DOLLY,
           RIGHT: swapMouseButtons ? MOUSE.ROTATE : MOUSE.PAN,
         }}
-        enabled={!drawMode}
+        enabled={!drawMode && !buggyMode}
         onChange={onCameraChange}
       />
     </>
@@ -824,6 +827,7 @@ function App() {
   const [selected, setSelected] = useState(false)
   const [showGrid, setShowGrid] = useState(true)
   const [swapMouseButtons, setSwapMouseButtons] = useState(false)
+  const [buggyMode, setBuggyMode] = useState(false)
   const [toolMode, setToolMode] = useState(null)
   const drawMode = toolMode !== null
   const cutMode = toolMode === 'cut'
@@ -839,15 +843,74 @@ function App() {
   const [fileStatus, setFileStatus] = useState('')
   const [isLoading, setIsLoading] = useState(false)
   const controlsRef = useRef()
+  const buggyModeRef = useRef(false)
+  const previousCameraRef = useRef(null)
+  const buggyKeysRef = useRef(new Set())
+  const buggySpeedRef = useRef(0)
+  const buggyDirectionRef = useRef(new Vector3(0, 0, -1))
   const modelRef = useRef(null)
   const fileInputRef = useRef()
   const textureInputRef = useRef()
   const drawingRaycasterRef = useRef(new Raycaster())
+  const buggyRaycasterRef = useRef(new Raycaster())
   const loadFileRef = useRef()
   const loadTextureRef = useRef()
   const loadTextureTilesRef = useRef()
   const workspaceReadyRef = useRef(false)
   const cameraSaveTimeoutRef = useRef()
+
+  const toggleBuggyMode = useCallback(() => {
+    const controls = controlsRef.current
+    if (!controls) return
+
+    if (buggyModeRef.current) {
+      const previousCamera = previousCameraRef.current
+      buggyModeRef.current = false
+      setBuggyMode(false)
+      previousCameraRef.current = null
+      if (previousCamera) {
+        controls.object.position.copy(previousCamera.position)
+        controls.object.up.copy(previousCamera.up)
+        controls.object.fov = previousCamera.fov
+        controls.object.updateProjectionMatrix()
+        controls.target.copy(previousCamera.target)
+        controls.update()
+      }
+      return
+    }
+
+    const camera = controls.object
+    previousCameraRef.current = {
+      position: camera.position.clone(),
+      target: controls.target.clone(),
+      up: camera.up.clone(),
+      fov: camera.fov,
+    }
+    window.clearTimeout(cameraSaveTimeoutRef.current)
+
+    const center = model?.bounds.getCenter(new Vector3()) ?? new Vector3()
+    let groundHeight = model ? model.bounds.min.y : -1.42
+    if (model) {
+      const boundsSize = model.bounds.getSize(new Vector3())
+      const raycaster = new Raycaster(
+        new Vector3(center.x, model.bounds.max.y + Math.max(boundsSize.length(), 1), center.z),
+        new Vector3(0, -1, 0),
+      )
+      const groundHit = raycaster.intersectObject(model.object, true)[0]
+      groundHeight = groundHit?.point.y ?? model.bounds.min.y
+    }
+
+    buggyModeRef.current = true
+    setBuggyMode(true)
+    camera.position.set(center.x, groundHeight + 0.08, center.z)
+    camera.up.set(0, 1, 0)
+    camera.fov = 26
+    camera.updateProjectionMatrix()
+    buggyDirectionRef.current.set(0, 0, -1)
+    controls.target.set(center.x, groundHeight - 0.25, center.z - 1)
+    controls.update()
+    camera.lookAt(controls.target)
+  }, [model])
 
   useEffect(() => () => {
     disposeModel(model)
@@ -952,6 +1015,14 @@ function App() {
       const controls = controlsRef.current
       if (!controls) return
 
+      if (buggyMode) {
+        if (event.key === 'Home') {
+          event.preventDefault()
+          toggleBuggyMode()
+        }
+        return
+      }
+
       if (event.key === 'Home') {
         event.preventDefault()
         controls.reset()
@@ -980,7 +1051,94 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [drawMode, cutMode, draftPoints, redoPoints, undoPolygons, redoPolygons, polygons, selectedPolygonId])
+  }, [buggyMode, drawMode, cutMode, draftPoints, redoPoints, undoPolygons, redoPolygons, polygons, selectedPolygonId, model, toggleBuggyMode])
+
+  useEffect(() => {
+    if (!buggyMode) {
+      buggyKeysRef.current.clear()
+      buggySpeedRef.current = 0
+      return undefined
+    }
+
+    const buggyKeys = buggyKeysRef.current
+    const driveKeys = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'])
+    const handleKeyDown = (event) => {
+      if (!driveKeys.has(event.key)) return
+      const target = event.target
+      if (target instanceof HTMLElement && (target.isContentEditable || target.matches('input, textarea, select'))) return
+      event.preventDefault()
+      buggyKeys.add(event.key)
+    }
+    const handleKeyUp = (event) => buggyKeys.delete(event.key)
+    const clearKeys = () => buggyKeys.clear()
+    let frameId
+    let previousTime
+
+    const drive = (time) => {
+      const controls = controlsRef.current
+      if (!controls) {
+        frameId = window.requestAnimationFrame(drive)
+        return
+      }
+
+      const delta = previousTime === undefined ? 0 : Math.min((time - previousTime) / 1000, 0.05)
+      previousTime = time
+      const acceleration = buggyKeys.has('ArrowUp') ? 1 : buggyKeys.has('ArrowDown') ? -1 : 0
+      const targetSpeed = acceleration > 0 ? 1.25 : acceleration < 0 ? -0.75 : 0
+      const response = acceleration === 0 ? 3.5 : 2.2
+      const speedDifference = targetSpeed - buggySpeedRef.current
+      buggySpeedRef.current += Math.sign(speedDifference) * Math.min(Math.abs(speedDifference), response * delta)
+
+      const camera = controls.object
+      const direction = buggyDirectionRef.current
+
+      const steering = Number(buggyKeys.has('ArrowLeft')) - Number(buggyKeys.has('ArrowRight'))
+      if (steering && delta) {
+        const turningStrength = 0.35 + 0.65 * Math.min(Math.abs(buggySpeedRef.current) / 1.25, 1)
+        direction.applyAxisAngle(new Vector3(0, 1, 0), steering * turningStrength * 1.2 * delta)
+      }
+
+      if (delta && Math.abs(buggySpeedRef.current) > 0.001) {
+        const movement = direction.clone().multiplyScalar(buggySpeedRef.current * delta)
+        camera.position.add(movement)
+
+        if (model) {
+          const boundsSize = model.bounds.getSize(new Vector3())
+          const raycaster = buggyRaycasterRef.current
+          raycaster.set(
+            new Vector3(camera.position.x, model.bounds.max.y + Math.max(boundsSize.length(), 1), camera.position.z),
+            new Vector3(0, -1, 0),
+          )
+          const groundHit = raycaster.intersectObject(model.object, true)[0]
+          if (groundHit) {
+            const heightDifference = groundHit.point.y + 0.08 - camera.position.y
+            camera.position.y += heightDifference
+          }
+        }
+      }
+
+      controls.target.set(
+        camera.position.x + direction.x,
+        camera.position.y - 0.33,
+        camera.position.z + direction.z,
+      )
+      camera.lookAt(controls.target)
+      frameId = window.requestAnimationFrame(drive)
+    }
+
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('keyup', handleKeyUp)
+    window.addEventListener('blur', clearKeys)
+    frameId = window.requestAnimationFrame(drive)
+    return () => {
+      window.cancelAnimationFrame(frameId)
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('keyup', handleKeyUp)
+      window.removeEventListener('blur', clearKeys)
+      buggyKeys.clear()
+      buggySpeedRef.current = 0
+    }
+  }, [buggyMode, model])
 
   const openFilePicker = () => fileInputRef.current?.click()
   const openTexturePicker = () => textureInputRef.current?.click()
@@ -1255,9 +1413,10 @@ function App() {
   }
 
   const handleCameraChange = () => {
-    if (!workspaceReadyRef.current) return
+    if (!workspaceReadyRef.current || buggyModeRef.current) return
     window.clearTimeout(cameraSaveTimeoutRef.current)
     cameraSaveTimeoutRef.current = window.setTimeout(() => {
+      if (buggyModeRef.current) return
       const controls = controlsRef.current
       if (!controls) return
       saveStoredCamera({
@@ -1628,7 +1787,7 @@ function App() {
             <span className="live-indicator"><span /> LIVE PREVIEW</span>
           </div>
           <div
-            className={`canvas-wrap ${drawMode ? 'draw-mode-active' : ''} ${leftDragging ? 'left-dragging' : ''}`}
+            className={`canvas-wrap ${drawMode ? 'draw-mode-active' : ''} ${buggyMode ? 'buggy-mode-active' : ''} ${leftDragging ? 'left-dragging' : ''}`}
             onPointerDownCapture={(event) => {
               if (!drawMode && event.button === 0 && event.target instanceof HTMLCanvasElement) {
                 setLeftDragging(true)
@@ -1668,6 +1827,7 @@ function App() {
                 cutMode={cutMode}
                 onCameraChange={handleCameraChange}
                 fitModel={fitModel}
+                buggyMode={buggyMode}
                 onDrawPointerDown={handleDrawPointerDown}
                 onDrawPointerMove={handleDrawPointerMove}
                 onSelectPolygon={selectPolygon}
@@ -1700,6 +1860,7 @@ function App() {
                   className={`draw-mode-button ${toolMode === 'area' ? 'control-active' : ''}`}
                   type="button"
                   aria-pressed={toolMode === 'area'}
+                  disabled={buggyMode}
                   onClick={toggleDrawMode}
                   data-tooltip={toolMode === 'area' ? 'Exit polygon mode' : 'Draw a polygon area'}
                   data-tooltip-position="top"
@@ -1712,12 +1873,26 @@ function App() {
                   className={`draw-mode-button ${toolMode === 'cut' ? 'control-active' : ''}`}
                   type="button"
                   aria-pressed={toolMode === 'cut'}
+                  disabled={buggyMode}
                   onClick={toggleCutMode}
                   data-tooltip={toolMode === 'cut' ? 'Exit cut mode' : 'Draw a planar cut through areas'}
                   data-tooltip-position="top"
                 >
                   <Icon name="cut" />
                   <span>{toolMode === 'cut' ? 'Cut on' : 'Cut area'}</span>
+                </button>
+                <span className="control-divider" />
+                <button
+                  className={`buggy-mode-button ${buggyMode ? 'control-active' : ''}`}
+                  type="button"
+                  aria-label={buggyMode ? 'Exit buggy mode' : 'Enter buggy mode'}
+                  aria-pressed={buggyMode}
+                  disabled={drawMode}
+                  onClick={toggleBuggyMode}
+                  data-tooltip={buggyMode ? 'Return to the previous camera view' : 'Drive the terrain in first-person mode'}
+                  data-tooltip-position="top"
+                >
+                  <Icon name="buggy" />
                 </button>
                 <span className="control-divider" />
                 <button
@@ -1732,7 +1907,7 @@ function App() {
                   <Icon name="swap" />
                 </button>
                 <span className="control-divider" />
-                <button type="button" aria-label="Reset camera" onClick={() => controlsRef.current?.reset()} data-tooltip="Reset the camera view" data-tooltip-position="top">
+                <button type="button" aria-label="Reset camera" disabled={buggyMode} onClick={() => controlsRef.current?.reset()} data-tooltip="Reset the camera view" data-tooltip-position="top">
                   <Icon name="reset" />
                 </button>
                 <span className="control-divider" />
@@ -1751,7 +1926,9 @@ function App() {
                   ? cutMode
                     ? <>LEFT CLICK: ADD CUT POINTS <span>·</span> RIGHT CLICK: APPLY CUT PATH <span>·</span> ESC: CANCEL <span>·</span> CTRL Z/Y: UNDO/REDO</>
                     : <>LEFT CLICK: ADD POINT <span>·</span> RIGHT CLICK: COMPLETE & EXIT <span>·</span> ESC: CANCEL <span>·</span> CTRL Z/Y: UNDO/REDO</>
-                  : <>{swapMouseButtons ? 'RIGHT DRAG TO ORBIT' : 'LEFT DRAG TO ORBIT'} <span>·</span> {swapMouseButtons ? 'LEFT DRAG TO PAN' : 'RIGHT DRAG TO PAN'} <span>·</span> SCROLL TO ZOOM <span>·</span> ARROWS: X/Y <span>·</span> PGUP/PGDN: Z <span>·</span> HOME: RESET</>}
+                  : buggyMode
+                    ? <>ARROWS: DRIVE &amp; STEER <span>·</span> HOME: RETURN TO PREVIOUS VIEW</>
+                    : <>{swapMouseButtons ? 'RIGHT DRAG TO ORBIT' : 'LEFT DRAG TO ORBIT'} <span>·</span> {swapMouseButtons ? 'LEFT DRAG TO PAN' : 'RIGHT DRAG TO PAN'} <span>·</span> SCROLL TO ZOOM <span>·</span> ARROWS: X/Y <span>·</span> PGUP/PGDN: Z <span>·</span> HOME: RESET</>}
               </div>
             </div>
           </div>

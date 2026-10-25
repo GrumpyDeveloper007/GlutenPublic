@@ -653,6 +653,10 @@ kbd {
   cursor: crosshair;
 }
 
+.canvas-wrap.buggy-mode-active canvas {
+  cursor: default;
+}
+
 .viewport-overlay {
   position: absolute;
   inset: 0;
@@ -860,6 +864,11 @@ kbd {
 .viewport-controls button.control-active {
   background: #292c22;
   color: #d0ff71;
+}
+
+.viewport-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
 }
 
 .viewport-controls .draw-mode-button {
