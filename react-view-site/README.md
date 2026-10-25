@@ -25,6 +25,14 @@ supported set are skipped and reported after loading. Inserted blocks are
 expanded into the geometry they reference.
 Select a completed area in the scene list or directly in the viewport to show its
 vertex coordinates and highlight its outline.
+Select an area and press **Delete** to remove it. **Ctrl+Z** and **Ctrl+Y** (or
+**Ctrl+Shift+Z**) undo and redo area cuts and deletions; while drawing, these
+shortcuts continue to undo and redo draft vertices.
+Select **Cut area**, left-click to add two or more points to a cut path, and
+right-click to apply it. Each consecutive pair of points defines a straight
+segment, calculated as a 2D slice in the map's X/Z plane; segments can split
+areas into multiple polygon pieces, including pieces created by earlier
+segments in the same path.
 In move mode, use the mouse-swap control to switch left-drag orbit and right-drag
 pan to right-drag orbit and left-drag pan.
 Hover over or keyboard-focus a button to see its tooltip.
@@ -35,11 +43,12 @@ maximum 4096-pixel edge before rendering, and the image is flipped vertically
 to match the model's coordinate orientation. Vulcan triangulations use their
 plan-view coordinates for the image mapping; other models use existing UVs or
 a generated planar mapping.
-The current model, PNG texture, and completed polygon areas are saved in browser
-IndexedDB and restored when the workspace is reopened. The browser manages
-storage limits and may evict saved data; the workspace reports when saving
-fails. Previously saved local-storage assets are migrated to IndexedDB when the
-workspace is opened.
+The current model, PNG texture, completed polygon areas, and camera view are
+saved in browser IndexedDB and restored when the workspace is reopened. The
+browser manages storage limits and may evict saved data; the workspace reports
+when saving fails. PNG textures are scaled to a maximum 4096-pixel edge, split
+into 1024-pixel tiles, and shown progressively while loading. Previously saved
+local-storage assets are migrated to IndexedDB when the workspace is opened.
 
 ## Development
 

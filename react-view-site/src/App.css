@@ -893,7 +893,7 @@ kbd {
 
 .interaction-hint {
   position: absolute;
-  bottom: 27px;
+  bottom: 64px;
   left: 22px;
   display: flex;
   align-items: center;
@@ -1029,7 +1029,7 @@ kbd {
   }
 
   .interaction-hint {
-    bottom: 21px;
+    bottom: 56px;
     left: 13px;
     font-size: 7px;
   }

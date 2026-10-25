@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Canvas } from '@react-three/fiber'
 import { Bounds, Line as DreiLine, OrbitControls } from '@react-three/drei'
 import { Box3, BufferAttribute, BufferGeometry, CanvasTexture, CatmullRomCurve3, Color, DoubleSide, EllipseCurve, Group, Line, LineBasicMaterial, Mesh, MeshStandardMaterial, MOUSE, Raycaster, Shape, ShapeGeometry, SRGBColorSpace, Vector3 } from 'three'
@@ -8,6 +8,7 @@ import { OBJLoader } from 'three/addons/loaders/OBJLoader.js'
 import { STLLoader } from 'three/addons/loaders/STLLoader.js'
 import DxfParser from 'dxf-parser'
 import { parse00t } from './parse00t.js'
+import { splitPolygonByLine } from './polygonCut.js'
 import './App.css'
 
 const supportedExtensions = ['glb', 'obj', 'stl', 'dxf', '00t']
@@ -58,18 +59,71 @@ async function saveStoredFile(id, file, clearTextureOnModel = true) {
     const transaction = database.transaction(workspaceStoreName, 'readwrite')
     const store = transaction.objectStore(workspaceStoreName)
     store.put({ id, name: file.name, type: file.type, blob: file })
-    if (id === 'model' && clearTextureOnModel) store.delete('texture')
+    if (id === 'model' && clearTextureOnModel) {
+      store.delete('texture')
+      const keysRequest = store.getAllKeys()
+      keysRequest.onsuccess = () => {
+        keysRequest.result
+          .filter((key) => typeof key === 'string' && key.startsWith('texture-tile:'))
+          .forEach((key) => store.delete(key))
+      }
+    }
     transaction.oncomplete = resolve
     transaction.onerror = () => reject(transaction.error ?? new Error('Could not save browser storage.'))
     transaction.onabort = () => reject(transaction.error ?? new Error('Could not save browser storage.'))
   })
 }
 
+async function saveStoredTextureTiles(file, width, height, tileSize, tiles) {
+  const database = await openWorkspaceDatabase()
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(workspaceStoreName, 'readwrite')
+    const store = transaction.objectStore(workspaceStoreName)
+    const keysRequest = store.getAllKeys()
+    keysRequest.onsuccess = () => {
+      keysRequest.result
+        .filter((key) => typeof key === 'string' && key.startsWith('texture-tile:'))
+        .forEach((key) => store.delete(key))
+      store.put({
+        id: 'texture',
+        name: file.name,
+        type: file.type,
+        tiled: true,
+        width,
+        height,
+        tileSize,
+        tileCount: tiles.length,
+      })
+      tiles.forEach((tile, index) => {
+        store.put({ ...tile, id: `texture-tile:${index}` })
+      })
+    }
+    keysRequest.onerror = () => transaction.abort()
+    transaction.oncomplete = resolve
+    transaction.onerror = () => reject(transaction.error ?? new Error('Could not save browser storage.'))
+    transaction.onabort = () => reject(transaction.error ?? new Error('Could not save browser storage.'))
+  })
+}
+
+async function readStoredTextureTile(index) {
+  return readStoredFile(`texture-tile:${index}`)
+}
+
 async function removeStoredFile(id) {
   const database = await openWorkspaceDatabase()
   return new Promise((resolve, reject) => {
     const transaction = database.transaction(workspaceStoreName, 'readwrite')
-    transaction.objectStore(workspaceStoreName).delete(id)
+    const store = transaction.objectStore(workspaceStoreName)
+    store.delete(id)
+    if (id === 'texture') {
+      const keysRequest = store.getAllKeys()
+      keysRequest.onsuccess = () => {
+        keysRequest.result
+          .filter((key) => typeof key === 'string' && key.startsWith('texture-tile:'))
+          .forEach((key) => store.delete(key))
+      }
+      keysRequest.onerror = () => transaction.abort()
+    }
     transaction.oncomplete = resolve
     transaction.onerror = () => reject(transaction.error ?? new Error('Could not update browser storage.'))
     transaction.onabort = () => reject(transaction.error ?? new Error('Could not update browser storage.'))
@@ -85,6 +139,25 @@ async function saveStoredPolygons(polygons) {
     transaction.onerror = () => reject(transaction.error ?? new Error('Could not save browser storage.'))
     transaction.onabort = () => reject(transaction.error ?? new Error('Could not save browser storage.'))
   })
+}
+
+async function saveStoredCamera(camera) {
+  const database = await openWorkspaceDatabase()
+  return new Promise((resolve, reject) => {
+    const transaction = database.transaction(workspaceStoreName, 'readwrite')
+    transaction.objectStore(workspaceStoreName).put({ id: 'camera', ...camera })
+    transaction.oncomplete = resolve
+    transaction.onerror = () => reject(transaction.error ?? new Error('Could not save browser storage.'))
+    transaction.onabort = () => reject(transaction.error ?? new Error('Could not save browser storage.'))
+  })
+}
+
+function validateStoredCamera(camera) {
+  const isVector = (value) => Array.isArray(value) && value.length === 3 && value.every(Number.isFinite)
+  if (!camera || !isVector(camera.position) || !isVector(camera.target) || !isVector(camera.up)) {
+    throw new Error('Saved camera data is invalid.')
+  }
+  return camera
 }
 
 function validateStoredPolygons(value) {
@@ -109,14 +182,16 @@ function validateStoredPolygons(value) {
 }
 
 async function restoreWorkspaceFiles() {
-  const [model, texture, savedPolygons] = await Promise.all([
+  const [model, texture, savedPolygons, camera] = await Promise.all([
     readStoredFile('model'),
     readStoredFile('texture'),
     readStoredFile('polygons'),
+    readStoredFile('camera'),
   ])
   const polygons = savedPolygons ? validateStoredPolygons(savedPolygons.value) : []
+  const savedCamera = camera ? validateStoredCamera(camera) : null
   const storedLegacy = localStorage.getItem(legacyStorageKey)
-  if (!storedLegacy) return { model, texture, polygons }
+  if (!storedLegacy) return { model, texture, polygons, camera: savedCamera }
 
   const legacy = JSON.parse(storedLegacy)
   const migrate = async (id, savedFile, existingFile) => {
@@ -133,7 +208,20 @@ async function restoreWorkspaceFiles() {
   const migratedModel = await migrate('model', legacy.model, model)
   const migratedTexture = await migrate('texture', legacy.texture, texture)
   localStorage.removeItem(legacyStorageKey)
-  return { model: migratedModel, texture: migratedTexture, polygons }
+  return { model: migratedModel, texture: migratedTexture, polygons, camera: savedCamera }
+}
+
+function canvasToBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob)
+      else reject(new Error('Could not encode a texture tile.'))
+    }, 'image/png')
+  })
+}
+
+function nextAnimationFrame() {
+  return new Promise((resolve) => window.requestAnimationFrame(resolve))
 }
 
 function dxfPoint(point, elevation = 0) {
@@ -349,10 +437,8 @@ function prepareModel(object) {
 
 function getDrawingHeight(model) {
   if (!model) return 0.02
-  model.object.updateWorldMatrix(true, false)
-  const bounds = new Box3().setFromObject(model.object)
-  const size = bounds.getSize(new Vector3())
-  return bounds.max.y + Math.max(size.length() * 0.005, 0.02)
+  const size = model.bounds.getSize(new Vector3())
+  return model.bounds.max.y + Math.max(size.length() * 0.005, 0.02)
 }
 
 function addPlanarUvs(geometry) {
@@ -452,6 +538,7 @@ function Icon({ name }) {
     layers: <><path d="m12 3 9 5-9 5-9-5 9-5Z" /><path d="m3 12 9 5 9-5M3 16l9 5 9-5" /></>,
     file: <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6M12 18v-6m-3 3 3-3 3 3" /></>,
     polygon: <><path d="m5 5 12-1 3 10-8 6-9-5 2-10Z" /><circle cx="5" cy="5" r="1" /><circle cx="17" cy="4" r="1" /><circle cx="20" cy="14" r="1" /><circle cx="12" cy="20" r="1" /><circle cx="3" cy="15" r="1" /></>,
+    cut: <><path d="m4 20 16-16" /><circle cx="5" cy="19" r="2" /><circle cx="19" cy="5" r="2" /><path d="m8 16 3 3m2-7 3 3" /></>,
     swap: <><path d="M4 8h15l-3-3" /><path d="m19 8-3 3M20 16H5l3 3" /><path d="m5 16 3-3" /></>,
   }
 
@@ -471,13 +558,12 @@ function createPolygonGeometry(polygon, model) {
   shape.closePath()
 
   const baseGeometry = new ShapeGeometry(shape)
-  const tessellatedGeometry = new TessellateModifier(0.12, 8).modify(baseGeometry)
+  const tessellatedGeometry = new TessellateModifier(0.3, 4).modify(baseGeometry)
   baseGeometry.dispose()
 
   const positions = tessellatedGeometry.getAttribute('position')
   if (model) {
-    model.object.updateWorldMatrix(true, false)
-    const bounds = new Box3().setFromObject(model.object)
+    const bounds = model.bounds
     const raycaster = new Raycaster()
     const direction = new Vector3(0, -1, 0)
     const origin = new Vector3()
@@ -510,8 +596,7 @@ function getPolygonSurfacePoints(polygon, model) {
     return polygon.points.map(([x, z]) => new Vector3(x, polygon.height + 0.02, z))
   }
 
-  model.object.updateWorldMatrix(true, false)
-  const bounds = new Box3().setFromObject(model.object)
+  const bounds = model.bounds
   const raycaster = new Raycaster()
   const origin = new Vector3()
   const direction = new Vector3(0, -1, 0)
@@ -524,7 +609,7 @@ function getPolygonSurfacePoints(polygon, model) {
   })
 }
 
-function PolygonArea({ polygon, model, selected, drawMode, onSelect }) {
+function PolygonArea({ polygon, model, selected, drawMode, onSelectPolygon }) {
   const geometry = useMemo(() => createPolygonGeometry(polygon, model), [polygon, model])
   const surfacePoints = useMemo(() => getPolygonSurfacePoints(polygon, model), [polygon, model])
   useEffect(() => () => geometry.dispose(), [geometry])
@@ -536,7 +621,7 @@ function PolygonArea({ polygon, model, selected, drawMode, onSelect }) {
         onClick={(event) => {
           if (drawMode) return
           event.stopPropagation()
-          onSelect()
+          onSelectPolygon(polygon.id)
         }}
       >
         <meshBasicMaterial
@@ -565,6 +650,8 @@ function PolygonArea({ polygon, model, selected, drawMode, onSelect }) {
   )
 }
 
+const MemoizedPolygonArea = memo(PolygonArea)
+
 function Scene({
   model,
   setSelected,
@@ -577,6 +664,9 @@ function Scene({
   selectedPolygonId,
   draftPoints,
   draftCursor,
+  cutMode,
+  onCameraChange,
+  fitModel,
   onDrawPointerDown,
   onDrawPointerMove,
   onSelectPolygon,
@@ -594,7 +684,7 @@ function Scene({
       <pointLight position={[-3, 1, -2]} intensity={18} color="#9683ff" />
       <pointLight position={[3, -1, 2]} intensity={10} color="#d0ff71" />
       {model && (
-        <Bounds key={model.object.uuid} fit clip margin={1.2}>
+        <Bounds key={model.object.uuid} fit={fitModel} clip margin={1.2}>
           <primitive
             object={model.object}
             onClick={(event) => {
@@ -606,13 +696,13 @@ function Scene({
         </Bounds>
       )}
       {polygons.map((polygon) => (
-        <PolygonArea
+        <MemoizedPolygonArea
           key={polygon.id}
           polygon={polygon}
           model={model}
           selected={polygon.id === selectedPolygonId}
           drawMode={drawMode}
-          onSelect={() => onSelectPolygon(polygon.id)}
+          onSelectPolygon={onSelectPolygon}
         />
       ))}
       {drawMode && (
@@ -626,11 +716,11 @@ function Scene({
             <planeGeometry args={[200, 200]} />
             <meshBasicMaterial transparent opacity={0} depthWrite={false} side={DoubleSide} />
           </mesh>
-          {draftLine.length > 1 && <DreiLine points={draftLine} color="#4d8dff" lineWidth={2} />}
+          {draftLine.length > 1 && <DreiLine points={draftLine} color={cutMode ? '#d0ff71' : '#4d8dff'} lineWidth={2} />}
           {draftPoints.map((point, index) => (
             <mesh key={index} position={[point.x, point.y + 0.01, point.z]}>
               <sphereGeometry args={[0.025, 10, 10]} />
-              <meshBasicMaterial color="#4d8dff" />
+              <meshBasicMaterial color={cutMode ? '#d0ff71' : '#4d8dff'} />
             </mesh>
           ))}
         </>
@@ -662,6 +752,7 @@ function Scene({
           RIGHT: swapMouseButtons ? MOUSE.ROTATE : MOUSE.PAN,
         }}
         enabled={!drawMode}
+        onChange={onCameraChange}
       />
     </>
   )
@@ -673,9 +764,14 @@ function App() {
   const [selected, setSelected] = useState(false)
   const [showGrid, setShowGrid] = useState(true)
   const [swapMouseButtons, setSwapMouseButtons] = useState(false)
-  const [drawMode, setDrawMode] = useState(false)
+  const [toolMode, setToolMode] = useState(null)
+  const drawMode = toolMode !== null
+  const cutMode = toolMode === 'cut'
+  const [fitModel, setFitModel] = useState(true)
   const [leftDragging, setLeftDragging] = useState(false)
   const [polygons, setPolygons] = useState([])
+  const [undoPolygons, setUndoPolygons] = useState([])
+  const [redoPolygons, setRedoPolygons] = useState([])
   const [selectedPolygonId, setSelectedPolygonId] = useState(null)
   const [draftPoints, setDraftPoints] = useState([])
   const [redoPoints, setRedoPoints] = useState([])
@@ -688,11 +784,17 @@ function App() {
   const drawingRaycasterRef = useRef(new Raycaster())
   const loadFileRef = useRef()
   const loadTextureRef = useRef()
+  const loadTextureTilesRef = useRef()
   const workspaceReadyRef = useRef(false)
+  const cameraSaveTimeoutRef = useRef()
 
   useEffect(() => () => {
     disposeModel(model)
   }, [model])
+
+  useEffect(() => () => {
+    window.clearTimeout(cameraSaveTimeoutRef.current)
+  }, [])
 
   useEffect(() => {
     if (!workspaceReadyRef.current) return
@@ -722,15 +824,33 @@ function App() {
         setDraftPoints([])
         setRedoPoints([])
         setDraftCursor(null)
-        setFileStatus('Cancelled the current area.')
+        setFileStatus(`Cancelled the current ${cutMode ? 'cut' : 'area'}.`)
         return
       }
 
-      if (drawMode && (event.ctrlKey || event.metaKey) && !event.altKey) {
+      if (
+        event.key === 'Delete' &&
+        selectedPolygonId !== null &&
+        !event.altKey &&
+        !event.ctrlKey &&
+        !event.metaKey
+      ) {
+        const polygon = polygons.find((item) => item.id === selectedPolygonId)
+        if (!polygon) return
+        event.preventDefault()
+        setUndoPolygons((history) => [...history, polygons])
+        setRedoPolygons([])
+        setPolygons(polygons.filter((item) => item.id !== selectedPolygonId))
+        setSelectedPolygonId(null)
+        setFileStatus('Deleted the selected area.')
+        return
+      }
+
+      if ((event.ctrlKey || event.metaKey) && !event.altKey) {
         const key = event.key.toLowerCase()
         const isUndo = key === 'z' && !event.shiftKey
         const isRedo = key === 'y' || (key === 'z' && event.shiftKey)
-        if (isUndo && draftPoints.length > 0) {
+        if (drawMode && isUndo && draftPoints.length > 0) {
           event.preventDefault()
           const undonePoint = draftPoints[draftPoints.length - 1]
           setDraftPoints(draftPoints.slice(0, -1))
@@ -738,12 +858,30 @@ function App() {
           setDraftCursor(null)
           return
         }
-        if (isRedo && redoPoints.length > 0) {
+        if (drawMode && isRedo && redoPoints.length > 0) {
           event.preventDefault()
           const restoredPoint = redoPoints[redoPoints.length - 1]
           setRedoPoints(redoPoints.slice(0, -1))
           setDraftPoints([...draftPoints, restoredPoint])
           setDraftCursor(null)
+          return
+        }
+        if (isUndo && undoPolygons.length > 0) {
+          event.preventDefault()
+          setPolygons(undoPolygons[undoPolygons.length - 1])
+          setUndoPolygons(undoPolygons.slice(0, -1))
+          setRedoPolygons((history) => [...history, polygons])
+          setSelectedPolygonId(null)
+          setFileStatus('Undid the last polygon operation.')
+          return
+        }
+        if (isRedo && redoPolygons.length > 0) {
+          event.preventDefault()
+          setPolygons(redoPolygons[redoPolygons.length - 1])
+          setRedoPolygons(redoPolygons.slice(0, -1))
+          setUndoPolygons((history) => [...history, polygons])
+          setSelectedPolygonId(null)
+          setFileStatus('Redid the polygon operation.')
           return
         }
       }
@@ -781,7 +919,7 @@ function App() {
 
     window.addEventListener('keydown', handleKeyDown)
     return () => window.removeEventListener('keydown', handleKeyDown)
-  }, [drawMode, draftPoints, redoPoints])
+  }, [drawMode, cutMode, draftPoints, redoPoints, undoPolygons, redoPolygons, polygons, selectedPolygonId])
 
   const openFilePicker = () => fileInputRef.current?.click()
   const openTexturePicker = () => textureInputRef.current?.click()
@@ -834,8 +972,11 @@ function App() {
         renderedEntities = result.renderedEntities
         unsupportedTypes = result.unsupportedTypes
       }
+      const preparedObject = prepareModel(object)
+      preparedObject.updateWorldMatrix(true, false)
       const nextModel = {
-        object: prepareModel(object),
+        object: preparedObject,
+        bounds: new Box3().setFromObject(preparedObject),
         name: file.name,
         extension,
         renderedEntities,
@@ -844,6 +985,7 @@ function App() {
         faceCount,
       }
       setTextureInfo(null)
+      if (shouldPersist) setFitModel(true)
       setModel(nextModel)
       setSelected(true)
       const storageWarning = shouldPersist ? await persistFile('model', file) : ''
@@ -894,6 +1036,7 @@ function App() {
       const scale = Math.min(1, 4096 / imageWidth, 4096 / imageHeight)
       const width = Math.max(1, Math.round(imageWidth * scale))
       const height = Math.max(1, Math.round(imageHeight * scale))
+      const tileSize = 1024
 
       bitmap = await createImageBitmap(file, {
         resizeWidth: width,
@@ -901,21 +1044,121 @@ function App() {
         resizeQuality: 'high',
         imageOrientation: 'flipY',
       })
-      const texture = new CanvasTexture(bitmap)
+      const canvas = document.createElement('canvas')
+      canvas.width = width
+      canvas.height = height
+      const context = canvas.getContext('2d')
+      if (!context) throw new Error('Could not create a canvas for the texture.')
+      const texture = new CanvasTexture(canvas)
+      texture.flipY = false
       texture.colorSpace = SRGBColorSpace
       texture.anisotropy = 4
       const meshCount = applyTextureToModel(targetModel, texture)
+      const tiles = []
+      const tileCount = Math.ceil(width / tileSize) * Math.ceil(height / tileSize)
+      let tileIndex = 0
+      for (let y = 0; y < height; y += tileSize) {
+        for (let x = 0; x < width; x += tileSize) {
+          const tileWidth = Math.min(tileSize, width - x)
+          const tileHeight = Math.min(tileSize, height - y)
+          const tileCanvas = document.createElement('canvas')
+          tileCanvas.width = tileWidth
+          tileCanvas.height = tileHeight
+          const tileContext = tileCanvas.getContext('2d')
+          if (!tileContext) throw new Error('Could not create a canvas for a texture tile.')
+          tileContext.drawImage(bitmap, x, y, tileWidth, tileHeight, 0, 0, tileWidth, tileHeight)
+          context.drawImage(tileCanvas, x, y)
+          texture.needsUpdate = true
+          tileIndex += 1
+          setFileStatus(`Loading texture tile ${tileIndex} of ${tileCount} · ${file.name}`)
+          await nextAnimationFrame()
+          if (shouldPersist) {
+            tiles.push({
+              x,
+              y,
+              width: tileWidth,
+              height: tileHeight,
+              blob: await canvasToBlob(tileCanvas),
+            })
+          }
+        }
+      }
       setTextureInfo({ name: file.name, width, height })
-      const storageWarning = shouldPersist ? await persistFile('texture', file) : ''
-      setFileStatus(`Applied ${file.name} to ${meshCount} model ${meshCount === 1 ? 'mesh' : 'meshes'}${scale < 1 ? ' · resized for browser performance' : ''}${storageWarning}`)
+      const storageWarning = shouldPersist
+        ? await persistTextureTiles(file, width, height, tileSize, tiles)
+        : ''
+      setFileStatus(`Applied ${file.name} to ${meshCount} model ${meshCount === 1 ? 'mesh' : 'meshes'} · loaded ${tileCount} tiles${scale < 1 ? ' · resized for browser performance' : ''}${storageWarning}`)
       return true
     } catch (error) {
-      bitmap?.close()
       setFileStatus(`Could not apply texture ${file.name}: ${error.message}`)
       return false
     } finally {
+      bitmap?.close()
       setIsLoading(false)
     }
+  }
+
+  const persistTextureTiles = async (file, width, height, tileSize, tiles) => {
+    try {
+      await saveStoredTextureTiles(file, width, height, tileSize, tiles)
+      return ''
+    } catch (error) {
+      return ` · Could not save texture tiles to IndexedDB: ${error.message}`
+    }
+  }
+
+  const loadTextureTiles = async (savedTexture, targetModel) => {
+    if (
+      !savedTexture ||
+      !Number.isSafeInteger(savedTexture.tileCount) ||
+      savedTexture.tileCount < 1 ||
+      savedTexture.tileCount > 16 ||
+      !Number.isSafeInteger(savedTexture.width) ||
+      !Number.isSafeInteger(savedTexture.height) ||
+      savedTexture.width > 4096 ||
+      savedTexture.height > 4096 ||
+      typeof savedTexture.name !== 'string'
+    ) {
+      throw new Error('Saved texture tile data is invalid.')
+    }
+    const canvas = document.createElement('canvas')
+    canvas.width = savedTexture.width
+    canvas.height = savedTexture.height
+    const context = canvas.getContext('2d')
+    if (!context) throw new Error('Could not create a canvas for the texture.')
+    const texture = new CanvasTexture(canvas)
+    texture.flipY = false
+    texture.colorSpace = SRGBColorSpace
+    texture.anisotropy = 4
+    const meshCount = applyTextureToModel(targetModel, texture)
+
+    for (let index = 0; index < savedTexture.tileCount; index += 1) {
+      const tile = await readStoredTextureTile(index)
+      if (!tile || !(tile.blob instanceof Blob) || ![tile.x, tile.y, tile.width, tile.height].every(Number.isFinite)) {
+        throw new Error(`Saved texture tile ${index + 1} is invalid.`)
+      }
+      const bitmap = await createImageBitmap(tile.blob)
+      try {
+        if (
+          tile.x < 0 ||
+          tile.y < 0 ||
+          tile.width <= 0 ||
+          tile.height <= 0 ||
+          tile.x + tile.width > savedTexture.width ||
+          tile.y + tile.height > savedTexture.height
+        ) {
+          throw new Error(`Saved texture tile ${index + 1} is outside the image bounds.`)
+        }
+        context.drawImage(bitmap, tile.x, tile.y, tile.width, tile.height)
+      } finally {
+        bitmap.close()
+      }
+      texture.needsUpdate = true
+      setTextureInfo({ name: savedTexture.name, width: savedTexture.width, height: savedTexture.height })
+      setFileStatus(`Restoring texture tile ${index + 1} of ${savedTexture.tileCount} · ${savedTexture.name}`)
+      await nextAnimationFrame()
+    }
+    return `Restored ${savedTexture.tileCount} texture tiles to ${meshCount} model ${meshCount === 1 ? 'mesh' : 'meshes'}.`
   }
 
   const clearTexture = async () => {
@@ -934,8 +1177,49 @@ function App() {
     event.target.value = ''
   }
 
+  const handleCameraChange = () => {
+    if (!workspaceReadyRef.current) return
+    window.clearTimeout(cameraSaveTimeoutRef.current)
+    cameraSaveTimeoutRef.current = window.setTimeout(() => {
+      const controls = controlsRef.current
+      if (!controls) return
+      saveStoredCamera({
+        position: controls.object.position.toArray(),
+        target: controls.target.toArray(),
+        up: controls.object.up.toArray(),
+      }).catch((error) => {
+        setFileStatus(`Could not save camera to IndexedDB: ${error.message}`)
+      })
+    }, 500)
+  }
+
+  const restoreCamera = async (camera) => {
+    if (!camera) return
+    let controls = controlsRef.current
+    for (let frame = 0; !controls && frame < 120; frame += 1) {
+      await nextAnimationFrame()
+      controls = controlsRef.current
+    }
+    if (!controls) throw new Error('The camera controls are not ready to restore the saved view.')
+    controls.object.position.fromArray(camera.position)
+    controls.object.up.fromArray(camera.up)
+    controls.target.fromArray(camera.target)
+    controls.update()
+  }
+
   const toggleDrawMode = () => {
-    setDrawMode((enabled) => !enabled)
+    setToolMode((mode) => mode === 'area' ? null : 'area')
+    setSelectedPolygonId(null)
+    setSelected(false)
+    setDraftPoints([])
+    setRedoPoints([])
+    setDraftCursor(null)
+  }
+
+  const toggleCutMode = () => {
+    setToolMode((mode) => mode === 'cut' ? null : 'cut')
+    setSelectedPolygonId(null)
+    setSelected(false)
     setDraftPoints([])
     setRedoPoints([])
     setDraftCursor(null)
@@ -944,6 +1228,48 @@ function App() {
   const handleDrawPointerDown = (event) => {
     event.stopPropagation()
     if (event.button === 2) {
+      if (cutMode) {
+        if (draftPoints.length < 2) {
+          setFileStatus('Add two points to define a cut line.')
+          return
+        }
+
+        let nextId = polygons.reduce((maximum, polygon) => Math.max(maximum, polygon.id), 0) + 1
+        let addedPieceCount = 0
+        let nextPolygons = polygons
+
+        for (let index = 0; index < draftPoints.length - 1; index += 1) {
+          const start = [draftPoints[index].x, draftPoints[index].z]
+          const end = [draftPoints[index + 1].x, draftPoints[index + 1].z]
+          nextPolygons = nextPolygons.flatMap((polygon) => {
+            const pieces = splitPolygonByLine(polygon, start, end)
+            if (!pieces) return [polygon]
+            addedPieceCount += pieces.length - 1
+            return pieces.map((points) => ({
+              id: nextId++,
+              height: polygon.height,
+              points,
+            }))
+          })
+        }
+
+        if (addedPieceCount === 0) {
+          setFileStatus('The cut line did not divide any areas.')
+        } else {
+          setUndoPolygons((history) => [...history, polygons])
+          setRedoPolygons([])
+          setPolygons(nextPolygons)
+          setSelected(false)
+          setFileStatus(`Applied ${draftPoints.length - 1} cut segments, creating ${addedPieceCount} additional polygon pieces.`)
+        }
+        setSelectedPolygonId(null)
+        setDraftPoints([])
+        setRedoPoints([])
+        setDraftCursor(null)
+        setToolMode(null)
+        return
+      }
+
       if (draftPoints.length < 3) {
         setFileStatus('Add at least 3 points before completing an area.')
         return
@@ -951,7 +1277,7 @@ function App() {
 
       const height = getDrawingHeight(model)
       setPolygons((areas) => [...areas, {
-        id: areas.length + 1,
+        id: areas.reduce((maximum, area) => Math.max(maximum, area.id), 0) + 1,
         height,
         points: draftPoints.map(({ x, z }) => [x, z]),
       }])
@@ -959,7 +1285,7 @@ function App() {
       setDraftPoints([])
       setRedoPoints([])
       setDraftCursor(null)
-      setDrawMode(false)
+      setToolMode(null)
       setFileStatus(`Added area ${polygons.length + 1} with ${draftPoints.length} points.`)
       return
     }
@@ -986,10 +1312,15 @@ function App() {
 
   const selectedPolygonIndex = polygons.findIndex((polygon) => polygon.id === selectedPolygonId)
   const selectedPolygon = polygons[selectedPolygonIndex]
+  const selectPolygon = useCallback((polygonId) => {
+    setSelected(false)
+    setSelectedPolygonId(polygonId)
+  }, [])
 
   useEffect(() => {
     loadFileRef.current = loadFile
     loadTextureRef.current = loadTexture
+    loadTextureTilesRef.current = loadTextureTiles
   })
 
   useEffect(() => {
@@ -999,18 +1330,27 @@ function App() {
       try {
         const workspace = await restoreWorkspaceFiles()
         setPolygons(workspace.polygons)
-        workspaceReadyRef.current = true
+        setFitModel(!workspace.camera)
+        await restoreCamera(workspace.camera)
+        if (cancelled) return
         if (workspace.model) {
           const file = await restoreFile(workspace.model)
           if (cancelled) return
           const restoredModel = await loadFileRef.current(file, false)
           if (!restoredModel || cancelled) return
           if (workspace.texture) {
-            const textureFile = await restoreFile(workspace.texture)
-            if (cancelled) return
-            await loadTextureRef.current(textureFile, restoredModel, false)
+            if (workspace.texture.tiled) {
+              const message = await loadTextureTilesRef.current(workspace.texture, restoredModel)
+              if (!cancelled) setFileStatus(message)
+            } else {
+              const textureFile = await restoreFile(workspace.texture)
+              if (cancelled) return
+              await loadTextureRef.current(textureFile, restoredModel)
+            }
           }
         }
+        if (cancelled) return
+        workspaceReadyRef.current = true
       } catch (error) {
         if (!cancelled) setFileStatus(`Could not restore saved workspace: ${error.message}`)
       }
@@ -1234,12 +1574,12 @@ function App() {
                 selectedPolygonId={selectedPolygonId}
                 draftPoints={draftPoints}
                 draftCursor={draftCursor}
+                cutMode={cutMode}
+                onCameraChange={handleCameraChange}
+                fitModel={fitModel}
                 onDrawPointerDown={handleDrawPointerDown}
                 onDrawPointerMove={handleDrawPointerMove}
-                onSelectPolygon={(polygonId) => {
-                  setSelected(false)
-                  setSelectedPolygonId(polygonId)
-                }}
+                onSelectPolygon={selectPolygon}
               />
             </Canvas>
             <div className="viewport-overlay">
@@ -1266,15 +1606,27 @@ function App() {
               </div>
               <div className="viewport-controls">
                 <button
-                  className={`draw-mode-button ${drawMode ? 'control-active' : ''}`}
+                  className={`draw-mode-button ${toolMode === 'area' ? 'control-active' : ''}`}
                   type="button"
-                  aria-pressed={drawMode}
+                  aria-pressed={toolMode === 'area'}
                   onClick={toggleDrawMode}
-                  data-tooltip={drawMode ? 'Exit polygon mode' : 'Draw a polygon area'}
+                  data-tooltip={toolMode === 'area' ? 'Exit polygon mode' : 'Draw a polygon area'}
                   data-tooltip-position="top"
                 >
                   <Icon name="polygon" />
-                  <span>{drawMode ? 'Polygon on' : 'Draw area'}</span>
+                  <span>{toolMode === 'area' ? 'Polygon on' : 'Draw area'}</span>
+                </button>
+                <span className="control-divider" />
+                <button
+                  className={`draw-mode-button ${toolMode === 'cut' ? 'control-active' : ''}`}
+                  type="button"
+                  aria-pressed={toolMode === 'cut'}
+                  onClick={toggleCutMode}
+                  data-tooltip={toolMode === 'cut' ? 'Exit cut mode' : 'Draw a planar cut through areas'}
+                  data-tooltip-position="top"
+                >
+                  <Icon name="cut" />
+                  <span>{toolMode === 'cut' ? 'Cut on' : 'Cut area'}</span>
                 </button>
                 <span className="control-divider" />
                 <button
@@ -1303,9 +1655,11 @@ function App() {
                 ><Icon name="grid" /></button>
               </div>
               <div className="interaction-hint">
-                <Icon name={drawMode ? 'polygon' : 'orbit'} />
+                <Icon name={drawMode ? (cutMode ? 'cut' : 'polygon') : 'orbit'} />
                 {drawMode
-                  ? <>LEFT CLICK: ADD POINT <span>·</span> RIGHT CLICK: COMPLETE & EXIT <span>·</span> ESC: CANCEL <span>·</span> CTRL Z/Y: UNDO/REDO</>
+                  ? cutMode
+                    ? <>LEFT CLICK: ADD CUT POINTS <span>·</span> RIGHT CLICK: APPLY CUT PATH <span>·</span> ESC: CANCEL <span>·</span> CTRL Z/Y: UNDO/REDO</>
+                    : <>LEFT CLICK: ADD POINT <span>·</span> RIGHT CLICK: COMPLETE & EXIT <span>·</span> ESC: CANCEL <span>·</span> CTRL Z/Y: UNDO/REDO</>
                   : <>{swapMouseButtons ? 'RIGHT DRAG TO ORBIT' : 'LEFT DRAG TO ORBIT'} <span>·</span> {swapMouseButtons ? 'LEFT DRAG TO PAN' : 'RIGHT DRAG TO PAN'} <span>·</span> SCROLL TO ZOOM <span>·</span> ARROWS: X/Y <span>·</span> PGUP/PGDN: Z <span>·</span> HOME: RESET</>}
               </div>
             </div>
