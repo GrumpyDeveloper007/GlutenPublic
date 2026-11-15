@@ -6,7 +6,7 @@ import { LatLngTuple, Icon, LatLngBounds, DomEvent, LeafletMouseEvent } from "le
 import { Map as LeafletMap } from 'leaflet';
 import { booleanValid, booleanWithin } from "@turf/turf";
 import { mapDataService } from './_services/index';
-import { TopicGroupClass } from "@/_model/model";
+import { groupDetailsToFeatureCollection, TopicGroupClass } from "@/_model/model";
 // import worldEEZData from '../staticdata/World-EEZ.geo.json';
 
 // Fix for default markers in React Leaflet
@@ -520,6 +520,8 @@ export default function Map({
     const [worldEEZData, setWorldEEZData] = useState<any>(null);
     const [polygonPoints, setPolygonPoints] = useState<any[]>([]);
     const [selectedPolygonIndex, setSelectedPolygonIndex] = useState<number | null>(null);
+    const selectedPolygonIndexRef = useRef(selectedPolygonIndex);
+    const labelElementsRef = useRef<globalThis.Map<number, HTMLElement>>(new globalThis.Map());
     const [selectedPointIds, setSelectedPointIds] = useState<Set<string>>(new Set());
     const [interactionMode, setInteractionMode] = useState<MapInteractionMode>('move');
     const interactionModeRef = useRef(interactionMode);
@@ -532,6 +534,13 @@ export default function Map({
 
     worldEEZDataRef.current = worldEEZData;
     interactionModeRef.current = interactionMode;
+    selectedPolygonIndexRef.current = selectedPolygonIndex;
+
+    useEffect(() => {
+        labelElementsRef.current.forEach((element, featureIndex) => {
+            element.classList.toggle('selected', featureIndex === selectedPolygonIndex);
+        });
+    }, [selectedPolygonIndex]);
 
     // Sync worldEEZData to parent component when it changes
     useEffect(() => {
@@ -961,7 +970,10 @@ export default function Map({
             return;
         }
         try {
-            const processedData = prepareGeoJSONForEditor(importedGeoJSON.data);
+            const importData = Array.isArray(importedGeoJSON.data)
+                ? groupDetailsToFeatureCollection(importedGeoJSON.data)
+                : importedGeoJSON.data;
+            const processedData = prepareGeoJSONForEditor(importData);
             undoStackRef.current = [];
             redoStackRef.current = [];
             setSelectedPolygonIndex(null);
@@ -996,26 +1008,56 @@ export default function Map({
     // Event handlers for EEZ polygons
     const onEachFeature = useCallback((feature: any, layer: any) => {
         const featureIndex = feature.properties?.featureIndex ?? 0;
+        const name = typeof feature.properties?.Name === 'string' ? feature.properties.Name.trim() : '';
+        const originalName = typeof feature.properties?.OriginalName === 'string'
+            ? feature.properties.OriginalName.trim()
+            : '';
+        const mapLabel = (name || originalName).slice(0, 30);
+
+        const selectFeature = (event?: { originalEvent?: Event; stopPropagation?: () => void }) => {
+            if (interactionModeRef.current === 'select') {
+                return;
+            }
+            if (event?.originalEvent) {
+                DomEvent.stopPropagation(event.originalEvent);
+            } else {
+                event?.stopPropagation?.();
+            }
+            setSelectedPolygonIndex((currentSelected: number | null) =>
+                currentSelected === featureIndex ? null : featureIndex
+            );
+        };
+
+        if (mapLabel) {
+            layer.bindTooltip(mapLabel, {
+                permanent: true,
+                direction: 'center',
+                className: 'group-detail-label',
+                interactive: true,
+            });
+            layer.on('tooltipopen', (event: any) => {
+                const tooltipElement = event.tooltip.getElement();
+                if (!tooltipElement) return;
+                labelElementsRef.current.set(featureIndex, tooltipElement);
+                tooltipElement.classList.toggle('selected', selectedPolygonIndexRef.current === featureIndex);
+                DomEvent.on(tooltipElement, 'click', selectFeature);
+            });
+            layer.on('tooltipclose', (event: any) => {
+                const tooltipElement = event.tooltip.getElement();
+                if (tooltipElement) {
+                    DomEvent.off(tooltipElement, 'click', selectFeature);
+                    if (labelElementsRef.current.get(featureIndex) === tooltipElement) {
+                        labelElementsRef.current.delete(featureIndex);
+                    }
+                }
+            });
+        }
 
         // Remove any existing click handlers to avoid duplicates
         layer.off('click');
 
         // Add click handler for polygon selection
-        layer.on('click', (e: any) => {
-            if (interactionModeRef.current === 'select') {
-                return;
-            }
-            console.log('Polygon clicked:', featureIndex, feature.properties?.Country);
-            setSelectedPolygonIndex((currentSelected: number | null) => {
-                if (currentSelected === featureIndex) {
-                    // If clicking the same polygon, deselect it
-                    return null;
-                } else {
-                    // Select this polygon
-                    return featureIndex;
-                }
-            });
-        });
+        layer.on('click', selectFeature);
 
         if (feature.properties && feature.properties.Country) {
             const isCurrentlySelected = selectedPolygonIndex === featureIndex;

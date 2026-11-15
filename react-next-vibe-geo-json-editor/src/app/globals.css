@@ -121,6 +121,15 @@ body {
   height: 100%;
 }
 
+.group-detail-label {
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.group-detail-label.selected {
+  font-weight: bold;
+}
+
 
 .watermark {
   position: absolute;

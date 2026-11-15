@@ -1,7 +1,7 @@
 'use client'
 
 import React, { useRef } from 'react';
-import { TopicGroupClass } from '../_model/model';
+import { featureCollectionToGroupDetails, TopicGroupClass } from '../_model/model';
 
 const Sidebar = ({
     selectedTopicGroup,
@@ -26,25 +26,27 @@ const Sidebar = ({
     };
 
     // Function to download the current GeoJSON data
-    const downloadGeoJSON = () => {
+    const downloadJson = () => {
         if (!worldEEZData) {
-            alert('No GeoJSON data available to download');
+            alert('No JSON data available to download');
             return;
         }
 
-        // Create a cleaned copy of the data without featureIndex
-        const cleanedData = {
-            ...worldEEZData,
-            features: worldEEZData.features.map((feature: any) => {
-                const { featureIndex, ...propertiesWithoutFeatureIndex } = feature.properties || {};
-                return {
-                    ...feature,
-                    properties: propertiesWithoutFeatureIndex
-                };
-            })
-        };
+        const isGroupDetailData = Array.isArray(worldEEZData.groupDetails);
+        const dataToDownload = isGroupDetailData
+            ? featureCollectionToGroupDetails(worldEEZData)
+            : {
+                ...worldEEZData,
+                features: worldEEZData.features.map((feature: any) => {
+                    const { featureIndex, ...propertiesWithoutFeatureIndex } = feature.properties || {};
+                    return {
+                        ...feature,
+                        properties: propertiesWithoutFeatureIndex
+                    };
+                })
+            };
 
-        const jsonString = JSON.stringify(cleanedData);
+        const jsonString = JSON.stringify(dataToDownload, null, isGroupDetailData ? 2 : 0);
 
         // Create a blob with the JSON data
         const blob = new Blob([jsonString], { type: 'application/json' });
@@ -53,7 +55,7 @@ const Sidebar = ({
         const url = URL.createObjectURL(blob);
         const link = document.createElement('a');
         link.href = url;
-        link.download = originalFileName || 'World-EEZ.geo.json';
+        link.download = originalFileName || (isGroupDetailData ? 'group-details.json' : 'World-EEZ.geo.json');
 
         // Trigger download
         document.body.appendChild(link);
@@ -93,7 +95,7 @@ const Sidebar = ({
     return (
         <div style={{ padding: '20px', height: '100vh', overflowY: 'auto' }}>
             <div style={{ marginBottom: '20px', paddingBottom: '15px', borderBottom: '2px solid #ddd' }}>
-                <h3 style={{ marginTop: 0 }}>GeoJSON Editor</h3>
+                <h3 style={{ marginTop: 0 }}>                JSON Editor</h3>
                 <input
                     ref={fileInputRef}
                     type="file"
@@ -117,10 +119,10 @@ const Sidebar = ({
                         marginTop: '10px',
                     }}
                 >
-                    📂 Load geo.json
+                    📂 Load JSON
                 </button>
                 <button
-                    onClick={downloadGeoJSON}
+                    onClick={downloadJson}
                     disabled={!worldEEZData}
                     style={{
                         backgroundColor: worldEEZData ? '#4CAF50' : '#cccccc',
@@ -135,7 +137,7 @@ const Sidebar = ({
                         marginTop: '10px'
                     }}
                 >
-                    📥 Download geo.json
+                    📥 Download JSON
                 </button>
                 {!worldEEZData && (
                     <p style={{

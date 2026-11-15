@@ -1,5 +1,9 @@
 This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
 
+## Loading and saving map data
+
+The editor can load and save GeoJSON FeatureCollections or JSON arrays of `GroupDetail` records. A GroupDetail record uses `GroupId`, `Name`, `OriginalName`, `AboutText`, `GeoLongitudeMin`, `GeoLatitudeMin`, `GeoLongitudeMax`, `GeoLatitudeMax`, and `Notes`. Records with all four geographic bounds and non-zero width and height are shown as rectangles; saving updates those bounds to match any map edits. Map labels use `Name`, falling back to `OriginalName`, and are limited to 30 characters.
+
 ## Getting Started
 
 First, run the development server:
