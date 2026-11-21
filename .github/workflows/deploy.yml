@@ -28,15 +28,31 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: ./react-view-site/package-lock.json
+          cache-dependency-path: |
+            ./react-next-vibe-geo-json-editor/package-lock.json
+            ./react-view-site/package-lock.json
 
-      - name: Install dependencies
+      - name: Install GeoJSON editor dependencies
+        working-directory: ./react-next-vibe-geo-json-editor
+        run: npm ci
+
+      - name: Build GeoJSON editor
+        working-directory: ./react-next-vibe-geo-json-editor
+        run: npm run build
+
+      - name: Install react-view-site dependencies
         working-directory: ./react-view-site
         run: npm ci
 
-      - name: Build app
+      - name: Build react-view-site
         working-directory: ./react-view-site
         run: npm run build
+
+      - name: Assemble Pages artifact
+        run: |
+          mkdir -p ./pages/react-next-vibe-geo-json-editor
+          cp -R ./react-view-site/dist/. ./pages/
+          cp -R ./react-next-vibe-geo-json-editor/out/. ./pages/react-next-vibe-geo-json-editor/
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
@@ -44,8 +60,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Points to the build output inside your subfolder
-          path: "./react-view-site/dist" # Change to "./react-view-site/build" if using Create React App
+          path: "./pages"
 
       - name: Deploy to GitHub Pages
         id: deployment

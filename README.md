@@ -11,6 +11,11 @@ i.e. on google maps
 
 Automate as much as possible the above process, provide information to fellow coeliacs and people who wish to eat gluten free
 
+## Live demos
+
+- [React View Site](https://grumpydeveloper007.github.io/GlutenPublic/)
+- [GeoJSON Editor](https://grumpydeveloper007.github.io/GlutenPublic/react-next-vibe-geo-json-editor/)
+
 
 ## Pippin
 

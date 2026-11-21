@@ -6,7 +6,7 @@ const nextConfig = {
     },
     // This is important for static exports
     assetPrefix: './',
-    basePath: '',
+    basePath: '/GlutenPublic/react-next-vibe-geo-json-editor',
     // Ensure trailing slashes are handled correctly
     trailingSlash: true,
 };
