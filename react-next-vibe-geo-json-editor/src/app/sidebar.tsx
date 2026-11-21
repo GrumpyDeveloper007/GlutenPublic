@@ -34,7 +34,10 @@ const Sidebar = ({
 
         const isGroupDetailData = Array.isArray(worldEEZData.groupDetails);
         const dataToDownload = isGroupDetailData
-            ? featureCollectionToGroupDetails(worldEEZData)
+            ? featureCollectionToGroupDetails(worldEEZData).map(({ PublicGroup, ...groupDetail }) => ({
+                ...groupDetail,
+                ...(PublicGroup === true ? { PublicGroup } : {}),
+            }))
             : {
                 ...worldEEZData,
                 features: worldEEZData.features.map((feature: any) => {

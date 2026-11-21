@@ -14,20 +14,19 @@ export class TopicGroupClass {
 }
 
 export interface GroupDetail {
-    GroupId: string;
-    Name: string;
-    OriginalName: string | null;
-    AboutText: string | null;
-    GeoLongitudeMin: number | null;
-    GeoLatitudeMin: number | null;
-    GeoLongitudeMax: number | null;
-    GeoLatitudeMax: number | null;
-    Notes: string;
+    groupId: string;
+    name: string;
+    geoLongitudeMin: number | null;
+    geoLatitudeMin: number | null;
+    geoLongitudeMax: number | null;
+    geoLatitudeMax: number | null;
+    TotalPins: number | null;
+    PublicGroup: boolean | null;
 }
 
 type GroupDetailFeature = {
     type: 'Feature';
-    properties: GroupDetail & { groupDetailIndex: number };
+    properties: GroupDetail & { groupDetailIndex: number; featureIndex: number };
     geometry: {
         type: 'Polygon';
         coordinates: number[][][];
@@ -51,12 +50,20 @@ export function parseGroupDetails(data: unknown): GroupDetail[] {
         }
 
         const value = record as Record<string, unknown>;
-        if (typeof value.GroupId !== 'string') {
-            throw new Error(`GroupDetail at index ${index} must have a string GroupId`);
+        const getField = (key: string): unknown => {
+            if (Object.prototype.hasOwnProperty.call(value, key)) {
+                return value[key];
+            }
+            const pascalCaseKey = key.charAt(0).toUpperCase() + key.slice(1);
+            return value[pascalCaseKey];
+        };
+        const groupId = getField('groupId');
+        if (typeof groupId !== 'string') {
+            throw new Error(`GroupDetail at index ${index} must have a string groupId`);
         }
 
         const nullableString = (key: string): string | null => {
-            const field = value[key];
+            const field = getField(key);
             if (field == null) return null;
             if (typeof field !== 'string') {
                 throw new Error(`GroupDetail at index ${index} has an invalid ${key}`);
@@ -64,7 +71,7 @@ export function parseGroupDetails(data: unknown): GroupDetail[] {
             return field;
         };
         const nullableNumber = (key: string): number | null => {
-            const field = value[key];
+            const field = getField(key);
             if (field == null) return null;
             if (typeof field !== 'number' || !Number.isFinite(field)) {
                 throw new Error(`GroupDetail at index ${index} has an invalid ${key}`);
@@ -72,7 +79,7 @@ export function parseGroupDetails(data: unknown): GroupDetail[] {
             return field;
         };
         const defaultString = (key: string): string => {
-            const field = value[key];
+            const field = getField(key);
             if (field == null) return '';
             if (typeof field !== 'string') {
                 throw new Error(`GroupDetail at index ${index} has an invalid ${key}`);
@@ -81,25 +88,25 @@ export function parseGroupDetails(data: unknown): GroupDetail[] {
         };
 
         const groupDetail: GroupDetail = {
-            GroupId: value.GroupId,
-            Name: defaultString('Name'),
-            OriginalName: nullableString('OriginalName'),
-            AboutText: nullableString('AboutText'),
-            GeoLongitudeMin: nullableNumber('GeoLongitudeMin'),
-            GeoLatitudeMin: nullableNumber('GeoLatitudeMin'),
-            GeoLongitudeMax: nullableNumber('GeoLongitudeMax'),
-            GeoLatitudeMax: nullableNumber('GeoLatitudeMax'),
-            Notes: defaultString('Notes'),
+            groupId,
+            name: defaultString('name'),
+            geoLongitudeMin: nullableNumber('geoLongitudeMin'),
+            geoLatitudeMin: nullableNumber('geoLatitudeMin'),
+            geoLongitudeMax: nullableNumber('geoLongitudeMax'),
+            geoLatitudeMax: nullableNumber('geoLatitudeMax'),
+            TotalPins: nullableNumber('TotalPins'),
+            PublicGroup: value.PublicGroup === true || value.publicGroup === true || value.publicgroup === true,
         };
 
-        if (groupDetail.GeoLongitudeMin != null && groupDetail.GeoLongitudeMax != null
-            && groupDetail.GeoLongitudeMin > groupDetail.GeoLongitudeMax) {
-            throw new Error(`GroupDetail at index ${index} has longitude bounds in the wrong order`);
+        /*
+        if (groupDetail.geoLongitudeMin != null && groupDetail.geoLongitudeMax != null
+            && groupDetail.geoLongitudeMin > groupDetail.geoLongitudeMax) {
+            throw new Error(`GroupDetail at index ${groupDetail.groupId} has longitude bounds in the wrong order`);
         }
-        if (groupDetail.GeoLatitudeMin != null && groupDetail.GeoLatitudeMax != null
-            && groupDetail.GeoLatitudeMin > groupDetail.GeoLatitudeMax) {
-            throw new Error(`GroupDetail at index ${index} has latitude bounds in the wrong order`);
-        }
+        if (groupDetail.geoLatitudeMin != null && groupDetail.geoLatitudeMax != null
+            && groupDetail.geoLatitudeMin > groupDetail.geoLatitudeMax) {
+            throw new Error(`GroupDetail at index ${groupDetail.groupId} has latitude bounds in the wrong order`);
+        }*/
 
         return groupDetail;
     });
@@ -107,27 +114,28 @@ export function parseGroupDetails(data: unknown): GroupDetail[] {
 
 export function groupDetailsToFeatureCollection(data: unknown): GroupDetailFeatureCollection {
     const groupDetails = parseGroupDetails(data);
-    const features = groupDetails.flatMap((groupDetail, groupDetailIndex): GroupDetailFeature[] => {
-        const { GeoLongitudeMin, GeoLatitudeMin, GeoLongitudeMax, GeoLatitudeMax } = groupDetail;
-        if (GeoLongitudeMin == null || GeoLatitudeMin == null || GeoLongitudeMax == null || GeoLatitudeMax == null
-            || GeoLongitudeMin === GeoLongitudeMax || GeoLatitudeMin === GeoLatitudeMax) {
-            return [];
+    const features: GroupDetailFeature[] = [];
+    groupDetails.forEach((groupDetail, groupDetailIndex) => {
+        const { geoLongitudeMin: geoLongitudeMin, geoLatitudeMin: geoLatitudeMin, geoLongitudeMax: geoLongitudeMax, geoLatitudeMax: geoLatitudeMax } = groupDetail;
+        if (geoLongitudeMin == null || geoLatitudeMin == null || geoLongitudeMax == null || geoLatitudeMax == null
+            || geoLongitudeMin === geoLongitudeMax || geoLatitudeMin === geoLatitudeMax) {
+            return;
         }
 
-        return [{
+        features.push({
             type: 'Feature',
-            properties: { ...groupDetail, groupDetailIndex },
+            properties: { ...groupDetail, groupDetailIndex, featureIndex: features.length },
             geometry: {
                 type: 'Polygon',
                 coordinates: [[
-                    [GeoLongitudeMin, GeoLatitudeMin],
-                    [GeoLongitudeMax, GeoLatitudeMin],
-                    [GeoLongitudeMax, GeoLatitudeMax],
-                    [GeoLongitudeMin, GeoLatitudeMax],
-                    [GeoLongitudeMin, GeoLatitudeMin],
+                    [geoLongitudeMin, geoLatitudeMin],
+                    [geoLongitudeMax, geoLatitudeMin],
+                    [geoLongitudeMax, geoLatitudeMax],
+                    [geoLongitudeMin, geoLatitudeMax],
+                    [geoLongitudeMin, geoLatitudeMin],
                 ]],
             },
-        }];
+        });
     });
 
     return { type: 'FeatureCollection', features, groupDetails };
@@ -168,13 +176,13 @@ export function featureCollectionToGroupDetails(data: GroupDetailFeatureCollecti
         const bounds = geometryBounds(featuresByIndex.get(index)?.geometry);
         if (!bounds) return { ...groupDetail };
 
-        const [GeoLongitudeMin, GeoLatitudeMin, GeoLongitudeMax, GeoLatitudeMax] = bounds;
+        const [geoLongitudeMin, geoLatitudeMin, geoLongitudeMax, geoLatitudeMax] = bounds;
         return {
             ...groupDetail,
-            GeoLongitudeMin,
-            GeoLatitudeMin,
-            GeoLongitudeMax,
-            GeoLatitudeMax,
+            geoLongitudeMin,
+            geoLatitudeMin,
+            geoLongitudeMax,
+            geoLatitudeMax,
         };
     });
 }

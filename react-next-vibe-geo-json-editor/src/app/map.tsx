@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { MapContainer, Marker, Popup, TileLayer, GeoJSON, Rectangle, useMapEvents } from "react-leaflet";
-import { LatLngTuple, Icon, LatLngBounds, DomEvent, LeafletMouseEvent } from "leaflet";
+import { LatLngTuple, Icon, LatLngBounds, DomEvent, LeafletMouseEvent, GeoJSON as LeafletGeoJSON, Layer as LeafletLayer } from "leaflet";
 import { Map as LeafletMap } from 'leaflet';
 import { booleanValid, booleanWithin } from "@turf/turf";
 import { mapDataService } from './_services/index';
@@ -52,6 +52,16 @@ export function prepareGeoJSONForEditor(data: any) {
                 featureIndex: index,
             },
         })),
+    };
+}
+
+function getEEZStyle(isSelected: boolean) {
+    return {
+        fillColor: isSelected ? '#007f00' : '#7f0000',
+        weight: isSelected ? 3 : 2,
+        opacity: 1,
+        color: isSelected ? '#00ff00' : '#ff0000',
+        fillOpacity: isSelected ? 0.5 : 0.3
     };
 }
 
@@ -333,12 +343,10 @@ interface DisplayPositionProps {
     showDeleteMessage: boolean;
     removeSelectedPointsFromGeoJSON: (pointIds: Set<string>) => any;
     setWorldEEZData: React.Dispatch<React.SetStateAction<any>>;
-    extractPolygonPoints: (data: any) => any[];
-    setPolygonPoints: React.Dispatch<React.SetStateAction<any[]>>;
     simplifySelectedPolygon: (featureIndex: number) => { removed: number; message: string };
 }
 
-function DisplayPosition({ map, setCurrentMarkers, setSelectedTopicGroup, interactionMode, setInteractionMode, selectedPolygonIndex, selectedPointIds, setSelectedPointIds, setSelectedPoints, showDeleteMessage, removeSelectedPointsFromGeoJSON, setWorldEEZData, extractPolygonPoints, setPolygonPoints, simplifySelectedPolygon }: DisplayPositionProps) {
+function DisplayPosition({ map, setCurrentMarkers, setSelectedTopicGroup, interactionMode, setInteractionMode, selectedPolygonIndex, selectedPointIds, setSelectedPointIds, setSelectedPoints, showDeleteMessage, removeSelectedPointsFromGeoJSON, setWorldEEZData, simplifySelectedPolygon }: DisplayPositionProps) {
     const [position, setPosition] = useState(() => map.getCenter())
     const [pinCount, setPinCount] = useState(0)
     const [loading, setLoading] = useState(true)
@@ -518,8 +526,10 @@ export default function Map({
     const [map, setMap] = useState<LeafletMap | null>(null);
     const [currentMarkers, setCurrentMarkers] = useState<any[]>([]);
     const [worldEEZData, setWorldEEZData] = useState<any>(null);
-    const [polygonPoints, setPolygonPoints] = useState<any[]>([]);
     const [selectedPolygonIndex, setSelectedPolygonIndex] = useState<number | null>(null);
+    const geoJsonLayerRef = useRef<LeafletGeoJSON | null>(null);
+    const featureLayersRef = useRef<globalThis.Map<number, LeafletLayer>>(new globalThis.Map());
+    const featureLabelBoundsRef = useRef<globalThis.Map<number, LatLngBounds>>(new globalThis.Map());
     const selectedPolygonIndexRef = useRef(selectedPolygonIndex);
     const labelElementsRef = useRef<globalThis.Map<number, HTMLElement>>(new globalThis.Map());
     const [selectedPointIds, setSelectedPointIds] = useState<Set<string>>(new Set());
@@ -562,14 +572,117 @@ export default function Map({
         }
     }, [selectedPolygonIndex]);
 
-    // Update GeoJSON key when data changes to force re-render
+    const setFeatureLabelVisibility = useCallback((featureIndex: number) => {
+        if (!map) return;
+
+        const featureBounds = featureLabelBoundsRef.current.get(featureIndex);
+        const layer = featureLayersRef.current.get(featureIndex) as (LeafletLayer & {
+            getTooltip?: () => { options: { permanent: boolean } } | undefined;
+            openTooltip?: () => void;
+            closeTooltip?: () => LeafletLayer;
+        }) | undefined;
+        const tooltip = layer?.getTooltip?.();
+        if (!featureBounds || !layer || !tooltip) return;
+
+        const shouldShowLabel = featureBounds.intersects(map.getBounds());
+        if (tooltip.options.permanent === shouldShowLabel) return;
+
+        tooltip.options.permanent = shouldShowLabel;
+        if (shouldShowLabel) {
+            if (layer.closeTooltip) {
+                layer.off('mouseout', layer.closeTooltip, layer);
+            }
+            layer.openTooltip?.();
+        } else {
+            if (layer.closeTooltip) {
+                layer.on('mouseout', layer.closeTooltip, layer);
+            }
+            layer.closeTooltip?.();
+        }
+    }, [map]);
+
+    const updateVisibleFeatureLabels = useCallback(() => {
+        featureLabelBoundsRef.current.forEach((_, featureIndex) => {
+            setFeatureLabelVisibility(featureIndex);
+        });
+    }, [setFeatureLabelVisibility]);
+
+    useEffect(() => {
+        if (!map) return;
+
+        map.on('moveend', updateVisibleFeatureLabels);
+        return () => {
+            map.off('moveend', updateVisibleFeatureLabels);
+        };
+    }, [map, updateVisibleFeatureLabels]);
+
+    useEffect(() => {
+        updateVisibleFeatureLabels();
+    }, [geoJsonKey, map, updateVisibleFeatureLabels, worldEEZData?.features?.length]);
+
+    // Replace a single changed feature in place; only rebuild the full layer for bulk changes.
     const prevDataRef = useRef<any>(null);
     useEffect(() => {
-        if (worldEEZData && prevDataRef.current !== worldEEZData) {
-            prevDataRef.current = worldEEZData;
-            setGeoJsonKey(prev => prev + 1);
+        if (!worldEEZData || prevDataRef.current === worldEEZData) {
+            return;
         }
-    }, [worldEEZData]);
+        const previousData = prevDataRef.current;
+        prevDataRef.current = worldEEZData;
+        if (!previousData) {
+            return;
+        }
+
+        const previousFeatures = previousData.features;
+        const nextFeatures = worldEEZData.features;
+        if (previousFeatures.length !== nextFeatures.length) {
+            featureLayersRef.current.forEach((_, index) => {
+                if (index >= nextFeatures.length) featureLayersRef.current.delete(index);
+            });
+            featureLabelBoundsRef.current.forEach((_, index) => {
+                if (index >= nextFeatures.length) featureLabelBoundsRef.current.delete(index);
+            });
+            setGeoJsonKey(prev => prev + 1);
+            return;
+        }
+
+        let changedFeatureIndex = -1;
+        for (let index = 0; index < nextFeatures.length; index++) {
+            if (previousFeatures[index] !== nextFeatures[index]) {
+                if (changedFeatureIndex !== -1) {
+                    setGeoJsonKey(prev => prev + 1);
+                    return;
+                }
+                changedFeatureIndex = index;
+            }
+        }
+        if (changedFeatureIndex === -1) {
+            return;
+        }
+
+        const geoJsonLayer = geoJsonLayerRef.current;
+        const featureLayer = featureLayersRef.current.get(changedFeatureIndex);
+        if (!geoJsonLayer || !featureLayer) {
+            setGeoJsonKey(prev => prev + 1);
+            return;
+        }
+
+        geoJsonLayer.removeLayer(featureLayer);
+        featureLayersRef.current.delete(changedFeatureIndex);
+        geoJsonLayer.addData(nextFeatures[changedFeatureIndex]);
+        const updatedLayer = featureLayersRef.current.get(changedFeatureIndex) as (LeafletLayer & {
+            setStyle?: (style: ReturnType<typeof getEEZStyle>) => void;
+            eachLayer?: (callback: (child: LeafletLayer & {
+                setStyle?: (style: ReturnType<typeof getEEZStyle>) => void;
+            }) => void) => void;
+        }) | undefined;
+        const featureStyle = getEEZStyle(selectedPolygonIndexRef.current === changedFeatureIndex);
+        if (updatedLayer?.setStyle) {
+            updatedLayer.setStyle(featureStyle);
+        } else {
+            updatedLayer?.eachLayer?.(child => child.setStyle?.(featureStyle));
+        }
+        setFeatureLabelVisibility(changedFeatureIndex);
+    }, [setFeatureLabelVisibility, worldEEZData]);
 
     // Function to update a point position in GeoJSON data
     const updatePointPositionInGeoJSON = useCallback((pointId: string, newLat: number, newLng: number) => {
@@ -580,59 +693,40 @@ export default function Map({
         const polygonIndex = parseInt(parts[1]);
         const pointIndex = parseInt(parts[2]);
 
-        const updatedData = {
-            ...worldEEZData,
-            features: worldEEZData.features.map((feature: any, index: number) => {
-                // Always ensure featureIndex is preserved in properties
-                const updatedFeature = {
-                    ...feature,
-                    properties: {
-                        ...feature.properties,
-                        featureIndex: index
-                    }
-                };
+        const feature = worldEEZData.features[featureIndex];
+        if (!feature?.geometry) return worldEEZData;
 
-                if (index === featureIndex && feature.geometry) {
-                    if (feature.geometry.type === 'Polygon') {
-                        const coordinates = feature.geometry.coordinates.map((ring: number[][], ringIndex: number) =>
-                            ringIndex === 0 && polygonIndex === 0
-                                ? moveRingPoint(ring, pointIndex, [newLng, newLat])
-                                : ring
-                        );
+        let updatedFeature = feature;
+        if (feature.geometry.type === 'Polygon' && polygonIndex === 0) {
+            const coordinates = feature.geometry.coordinates.map((ring: number[][], ringIndex: number) =>
+                ringIndex === 0
+                    ? moveRingPoint(ring, pointIndex, [newLng, newLat])
+                    : ring
+            );
+            updatedFeature = {
+                ...feature,
+                geometry: { ...feature.geometry, coordinates }
+            };
+        } else if (feature.geometry.type === 'MultiPolygon') {
+            const polygons = feature.geometry.coordinates.map((polygon: number[][][], index: number) => {
+                if (index !== polygonIndex) return polygon;
+                return polygon.map((ring: number[][], ringIndex: number) =>
+                    ringIndex === 0
+                        ? moveRingPoint(ring, pointIndex, [newLng, newLat])
+                        : ring
+                );
+            });
+            updatedFeature = {
+                ...feature,
+                geometry: { ...feature.geometry, coordinates: polygons }
+            };
+        } else {
+            return worldEEZData;
+        }
 
-                        return {
-                            ...updatedFeature,
-                            geometry: {
-                                ...feature.geometry,
-                                coordinates
-                            }
-                        };
-                    } else if (feature.geometry.type === 'MultiPolygon') {
-                        const polygons = feature.geometry.coordinates.map((polygon: number[][][], idx: number) => {
-                            if (idx === polygonIndex) {
-                                const rings = polygon.map((ring: number[][], ringIdx: number) => {
-                                    if (ringIdx === 0) {
-                                        return moveRingPoint(ring, pointIndex, [newLng, newLat]);
-                                    }
-                                    return ring;
-                                });
-                                return rings;
-                            }
-                            return polygon;
-                        });
-
-                        return {
-                            ...updatedFeature,
-                            geometry: {
-                                ...feature.geometry,
-                                coordinates: polygons
-                            }
-                        };
-                    }
-                }
-                return updatedFeature;
-            })
-        };
+        const features = worldEEZData.features.slice();
+        features[featureIndex] = updatedFeature;
+        const updatedData = { ...worldEEZData, features };
 
         console.log(`Updated point ${pointId} to [${newLat}, ${newLng}]`);
         return updatedData;
@@ -742,17 +836,53 @@ export default function Map({
         return updatedData;
     }, [worldEEZData]);
 
+    const extractPolygonPoints = useCallback((geoJsonData: any, featureIndex: number) => {
+        const points: any[] = [];
+        const feature = geoJsonData?.features?.[featureIndex];
+        if (!feature?.geometry) {
+            return points;
+        }
+
+        const addRingPoints = (ring: number[][], polygonIndex: number) => {
+            const vertexCount = isClosedRing(ring) ? ring.length - 1 : ring.length;
+            for (let pointIndex = 0; pointIndex < vertexCount; pointIndex++) {
+                const coord = ring[pointIndex];
+                points.push({
+                    id: `${featureIndex}-${polygonIndex}-${pointIndex}`,
+                    position: [coord[1], coord[0]] as LatLngTuple,
+                    featureIndex,
+                    polygonIndex,
+                    pointIndex,
+                    country: feature.properties?.Country || 'Unknown',
+                    iso: feature.properties?.ISO_A3 || 'N/A'
+                });
+            }
+        };
+
+        if (feature.geometry.type === 'Polygon') {
+            addRingPoints(feature.geometry.coordinates[0], 0);
+        } else if (feature.geometry.type === 'MultiPolygon') {
+            feature.geometry.coordinates.forEach((polygon: number[][][], polygonIndex: number) => {
+                addRingPoints(polygon[0], polygonIndex);
+            });
+        }
+
+        return points;
+    }, []);
+
+    const polygonPoints = useMemo(
+        () => selectedPolygonIndex === null ? [] : extractPolygonPoints(worldEEZData, selectedPolygonIndex),
+        [extractPolygonPoints, selectedPolygonIndex, worldEEZData]
+    );
+
     // Handle selection box completion
     const handleSelectionComplete = useCallback((bounds: LatLngBounds) => {
         if (selectedPolygonIndex === null) {
             return;
         }
-        console.log('Selection box completed:', bounds);
         const pointsInBounds = polygonPoints.filter(point =>
-            point.featureIndex === selectedPolygonIndex &&
             bounds.contains([point.position[0], point.position[1]])
         );
-        console.log(`Found ${pointsInBounds.length} points in selection box`);
 
         const newSelectedIds = new Set(selectedPointIds);
         pointsInBounds.forEach(point => {
@@ -766,61 +896,14 @@ export default function Map({
         }
     }, [polygonPoints, selectedPointIds, selectedPolygonIndex, setSelectedPoints]);
 
-    const extractPolygonPoints = useCallback((geoJsonData: any) => {
-        const points: any[] = [];
-
-        if (geoJsonData && geoJsonData.features) {
-            geoJsonData.features.forEach((feature: any, featureIndex: number) => {
-                if (feature.geometry) {
-                    if (feature.geometry.type === 'Polygon') {
-                        const coordinates = feature.geometry.coordinates[0]; // Get outer ring
-                        const vertexCount = isClosedRing(coordinates) ? coordinates.length - 1 : coordinates.length;
-                        coordinates.slice(0, vertexCount).forEach((coord: number[], pointIndex: number) => {
-                            points.push({
-                                id: `${featureIndex}-0-${pointIndex}`, // polygonIndex is 0 for regular polygons
-                                position: [coord[1], coord[0]] as LatLngTuple, // [lat, lng]
-                                featureIndex,
-                                polygonIndex: 0,
-                                pointIndex,
-                                country: feature.properties?.Country || 'Unknown',
-                                iso: feature.properties?.ISO_A3 || 'N/A'
-                            });
-                        });
-                    } else if (feature.geometry.type === 'MultiPolygon') {
-                        // MultiPolygon: coordinates is array of polygons, each polygon has rings
-                        feature.geometry.coordinates.forEach((polygon: number[][][], polygonIndex: number) => {
-                            const outerRing = polygon[0]; // First ring is outer ring
-                            const vertexCount = isClosedRing(outerRing) ? outerRing.length - 1 : outerRing.length;
-                            outerRing.slice(0, vertexCount).forEach((coord: number[], pointIndex: number) => {
-                                points.push({
-                                    id: `${featureIndex}-${polygonIndex}-${pointIndex}`,
-                                    position: [coord[1], coord[0]] as LatLngTuple, // [lat, lng]
-                                    featureIndex,
-                                    polygonIndex,
-                                    pointIndex,
-                                    country: feature.properties?.Country || 'Unknown',
-                                    iso: feature.properties?.ISO_A3 || 'N/A'
-                                });
-                            });
-                        });
-                    }
-                }
-            });
-        }
-
-        console.log(`Extracted ${points.length} polygon points`);
-        return points;
-    }, []);
-
     const applyGeoJSONState = useCallback((data: any) => {
         setWorldEEZData(data);
-        setPolygonPoints(extractPolygonPoints(data));
-    }, [extractPolygonPoints]);
+    }, []);
 
     const commitGeoJSONChange = useCallback((newData: any) => {
         const current = worldEEZDataRef.current;
         if (current) {
-            undoStackRef.current.push(structuredClone(current));
+            undoStackRef.current.push(current);
             if (undoStackRef.current.length > MAX_UNDO_HISTORY) {
                 undoStackRef.current.shift();
             }
@@ -868,7 +951,7 @@ export default function Map({
         if (undoStackRef.current.length === 0) return;
         const current = worldEEZDataRef.current;
         if (current) {
-            redoStackRef.current.push(structuredClone(current));
+            redoStackRef.current.push(current);
         }
         const previous = undoStackRef.current.pop();
         if (previous) {
@@ -884,7 +967,7 @@ export default function Map({
         if (redoStackRef.current.length === 0) return;
         const current = worldEEZDataRef.current;
         if (current) {
-            undoStackRef.current.push(structuredClone(current));
+            undoStackRef.current.push(current);
         }
         const next = redoStackRef.current.pop();
         if (next) {
@@ -949,16 +1032,11 @@ export default function Map({
                 return response.json();
             })
             .then(data => {
-                console.log('Loaded EEZ data successfully:', data);
                 console.log('Number of features:', data.features ? data.features.length : 'No features array');
 
                 const processedData = prepareGeoJSONForEditor(data);
 
                 setWorldEEZData(processedData);
-
-                // Extract polygon points
-                const points = extractPolygonPoints(processedData);
-                setPolygonPoints(points);
             })
             .catch(error => {
                 console.error('Error loading EEZ data:', error);
@@ -970,10 +1048,9 @@ export default function Map({
             return;
         }
         try {
-            const importData = Array.isArray(importedGeoJSON.data)
+            const processedData = Array.isArray(importedGeoJSON.data)
                 ? groupDetailsToFeatureCollection(importedGeoJSON.data)
-                : importedGeoJSON.data;
-            const processedData = prepareGeoJSONForEditor(importData);
+                : prepareGeoJSONForEditor(importedGeoJSON.data);
             undoStackRef.current = [];
             redoStackRef.current = [];
             setSelectedPolygonIndex(null);
@@ -982,7 +1059,6 @@ export default function Map({
                 setSelectedPoints([]);
             }
             applyGeoJSONState(processedData);
-            setGeoJsonKey((prev) => prev + 1);
         } catch (error) {
             console.error('Error loading imported GeoJSON:', error);
             alert(error instanceof Error ? error.message : 'Invalid GeoJSON file');
@@ -996,19 +1072,16 @@ export default function Map({
         const featureIndex = feature.properties?.featureIndex ?? 0;
         const isSelected = selectedPolygonIndex === featureIndex;
 
-        return {
-            fillColor: isSelected ? '#007f00' : '#7f0000', // Green if selected, red if not
-            weight: isSelected ? 3 : 2, // Thicker border if selected
-            opacity: 1,
-            color: isSelected ? '#00ff00' : '#ff0000',
-            fillOpacity: isSelected ? 0.5 : 0.3 // More opaque if selected
-        };
+        return getEEZStyle(isSelected);
     }, [selectedPolygonIndex]);
 
     // Event handlers for EEZ polygons
     const onEachFeature = useCallback((feature: any, layer: any) => {
         const featureIndex = feature.properties?.featureIndex ?? 0;
-        const name = typeof feature.properties?.Name === 'string' ? feature.properties.Name.trim() : '';
+        featureLayersRef.current.set(featureIndex, layer);
+        const name = typeof feature.properties?.Name === 'string'
+            ? feature.properties.Name.trim()
+            : typeof feature.properties?.name === 'string' ? feature.properties.name.trim() : '';
         const originalName = typeof feature.properties?.OriginalName === 'string'
             ? feature.properties.OriginalName.trim()
             : '';
@@ -1029,8 +1102,13 @@ export default function Map({
         };
 
         if (mapLabel) {
+            const layerWithBounds = layer as LeafletLayer & { getBounds?: () => LatLngBounds };
+            const featureBounds = layerWithBounds.getBounds?.();
+            if (featureBounds) {
+                featureLabelBoundsRef.current.set(featureIndex, featureBounds);
+            }
             layer.bindTooltip(mapLabel, {
-                permanent: true,
+                permanent: false,
                 direction: 'center',
                 className: 'group-detail-label',
                 interactive: true,
@@ -1059,23 +1137,19 @@ export default function Map({
         // Add click handler for polygon selection
         layer.on('click', selectFeature);
 
-        if (feature.properties && feature.properties.Country) {
-            const isCurrentlySelected = selectedPolygonIndex === featureIndex;
-            //layer.bindPopup(`<b>${feature.properties.Country}</b><br/>ISO: ${feature.properties.ISO_A3 || 'N/A'}<br/><br/>Click to ${isCurrentlySelected ? 'deselect' : 'select'} this polygon`);
-        }
-    }, [selectedPolygonIndex]);
+    }, []);
 
     const displayMap = useMemo(
         () => (
             <MapContainer className="map-wrap"
                 center={center}
                 zoom={zoom}
+                preferCanvas={true}
                 boxZoom={false}
                 scrollWheelZoom={true}
                 ref={setMap}
                 whenReady={() => {
                     console.log('Map ready, loading EEZ data...');
-                    console.log('EEZ data:', worldEEZData);
                 }}>
                 <TileLayer
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
@@ -1090,6 +1164,7 @@ export default function Map({
                 {worldEEZData && (
                     <GeoJSON
                         key={`geojson-${geoJsonKey}`}
+                        ref={geoJsonLayerRef}
                         data={worldEEZData}
                         style={styleEEZ}
                         onEachFeature={onEachFeature}
@@ -1120,7 +1195,7 @@ export default function Map({
                                             commitGeoJSONChange(updatedGeoJSON);
 
                                             if (setSelectedPoints && isSelected) {
-                                                const updatedPoints = extractPolygonPoints(updatedGeoJSON);
+                                                const updatedPoints = extractPolygonPoints(updatedGeoJSON, point.featureIndex);
                                                 const selectedPointsList = updatedPoints.filter(p => selectedPointIds.has(p.id));
                                                 setSelectedPoints(selectedPointsList);
                                             }
@@ -1164,8 +1239,6 @@ export default function Map({
                 showDeleteMessage={showDeleteMessage}
                 removeSelectedPointsFromGeoJSON={removeSelectedPointsFromGeoJSON}
                 setWorldEEZData={setWorldEEZData}
-                extractPolygonPoints={extractPolygonPoints}
-                setPolygonPoints={setPolygonPoints}
                 simplifySelectedPolygon={simplifySelectedPolygon}
             /> : null}
             {displayMap}
